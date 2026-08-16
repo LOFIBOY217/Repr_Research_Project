@@ -20,7 +20,6 @@ if str(REPO_ROOT) not in sys.path:
 import torch
 from PIL import Image
 
-from main_fd import get_args_parser as get_training_args_parser
 from utils.builders import create_generation_model, create_tokenizer
 from utils.checkpoint_util import ckpt_resume
 from utils.data_util import to_uint8_numpy
@@ -59,32 +58,64 @@ def option_was_set(argv: list[str], *names: str) -> bool:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        "Generate sample images from iMF checkpoints",
-        parents=[get_training_args_parser()],
-    )
+    parser = argparse.ArgumentParser("Generate sample images from iMF checkpoints")
     parser.add_argument("--preset", default="imf", choices=sorted(PRESETS))
+    parser.add_argument("--model", default=None,
+                        help="Override the model from --preset, e.g. iMF_B or iMF_XL.")
     parser.add_argument("--checkpoint", "--load-from", dest="load_from", type=str)
     parser.add_argument("--compare-preset", choices=sorted(PRESETS),
                         help="Optional second preset for side-by-side comparison.")
     parser.add_argument("--compare-checkpoint", type=str,
                         help="Checkpoint for --compare-preset.")
     parser.add_argument("--output-dir", dest="sample_output_dir", type=Path, required=True)
-    parser.add_argument("--batch-size", dest="batch_size", type=int, default=argparse.SUPPRESS)
-    parser.add_argument("--num-images", dest="num_images", type=int, default=argparse.SUPPRESS)
-    parser.add_argument("--num-sampling-steps", dest="num_sampling_steps", type=int, default=argparse.SUPPRESS)
-    parser.add_argument("--interval-min", dest="interval_min", type=float, default=argparse.SUPPRESS)
-    parser.add_argument("--interval-max", dest="interval_max", type=float, default=argparse.SUPPRESS)
-    parser.add_argument("--noise-scale", dest="noise_scale", type=float, default=argparse.SUPPRESS)
-    parser.add_argument("--img-size", dest="img_size", type=int, default=argparse.SUPPRESS)
-    parser.add_argument("--patch-size", dest="patch_size", type=int, default=argparse.SUPPRESS)
-    parser.add_argument("--token-channels", dest="token_channels", type=int, default=argparse.SUPPRESS)
-    parser.add_argument("--tokenizer-patch-size", dest="tokenizer_patch_size", type=int, default=argparse.SUPPRESS)
-    parser.add_argument("--disable-v-head", dest="disable_v_head", action="store_true", default=argparse.SUPPRESS)
+    parser.add_argument("--batch-size", "--batch_size", dest="batch_size", type=int, default=8)
+    parser.add_argument("--num-images", "--num_images", dest="num_images", type=int, default=8)
+    parser.add_argument("--num-sampling-steps", "--num_sampling_steps",
+                        dest="num_sampling_steps", type=int, default=1)
+    parser.add_argument("--interval-min", "--interval_min", dest="interval_min", type=float)
+    parser.add_argument("--interval-max", "--interval_max", dest="interval_max", type=float)
+    parser.add_argument("--noise-scale", "--noise_scale", dest="noise_scale", type=float, default=1.0)
+    parser.add_argument("--img-size", "--img_size", dest="img_size", type=int, default=256)
+    parser.add_argument("--patch-size", "--patch_size", dest="patch_size", type=int)
+    parser.add_argument("--tokenizer", default="sdvae", choices=["sdvae"])
+    parser.add_argument("--token-channels", "--token_channels", dest="token_channels", type=int)
+    parser.add_argument("--tokenizer-patch-size", "--tokenizer_patch_size",
+                        dest="tokenizer_patch_size", type=int)
+    parser.add_argument("--disable-v-head", "--disable_v_head",
+                        dest="disable_v_head", action="store_true", default=None)
+    parser.add_argument("--rope-2d", "--rope_2d", dest="rope_2d", action="store_true")
+    parser.add_argument("--learned-pe", "--learned_pe", dest="learned_pe", action="store_true")
     parser.add_argument("--class-labels", type=int, nargs="+", default=None,
                         help="Optional ImageNet class ids. If omitted, labels are sampled uniformly.")
+    parser.add_argument("--num-classes", "--num_classes", dest="num_classes", type=int, default=1000)
     parser.add_argument("--ema-label", default="online",
                         help="Use 'online' weights or one EMA label from the checkpoint.")
+    parser.add_argument("--ema-type", "--ema_type", dest="ema_type",
+                        default="edm", choices=["const", "edm"])
+    parser.add_argument("--ema-rates", "--ema_rates", dest="ema_rates",
+                        default=[0.9999, 0.9996], type=float, nargs="+")
+    parser.add_argument("--ema-halflife-kimg", "--ema_halflife_kimg",
+                        dest="ema_halflife_kimg",
+                        default=[250, 500, 1000, 2000], type=float, nargs="+")
+    parser.add_argument("--label-drop-prob", "--label_drop_prob",
+                        dest="label_drop_prob", type=float, default=0.1)
+    parser.add_argument("--P-mean", "--P_mean", dest="P_mean", type=float, default=0.8)
+    parser.add_argument("--P-std", "--P_std", dest="P_std", type=float, default=0.8)
+    parser.add_argument("--ratio-r-neq-t", "--ratio_r_neq_t",
+                        dest="ratio_r_neq_t", type=float, default=0.5)
+    parser.add_argument("--cfg", type=float)
+    parser.add_argument("--cfg-beta", "--cfg_beta", dest="cfg_beta", type=float, default=1.0)
+    parser.add_argument("--cfg-omega-max", "--cfg_omega_max",
+                        dest="cfg_omega_max", type=float, default=7.0)
+    parser.add_argument("--aux-head-depth", "--aux_head_depth",
+                        dest="aux_head_depth", type=int, default=8)
+    parser.add_argument("--class-tokens", "--class_tokens", dest="class_tokens", type=int, default=8)
+    parser.add_argument("--time-tokens", "--time_tokens", dest="time_tokens", type=int, default=4)
+    parser.add_argument("--guidance-tokens", "--guidance_tokens",
+                        dest="guidance_tokens", type=int, default=4)
+    parser.add_argument("--interval-tokens", "--interval_tokens",
+                        dest="interval_tokens", type=int, default=2)
+    parser.add_argument("--same-noise", "--same_noise", dest="same_noise", action="store_true")
     parser.add_argument("--decode-bsz", default=None, type=int,
                         help="Override VAE decode chunk size.")
     parser.add_argument("--save-latents", action="store_true",
@@ -92,6 +123,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-grid", action="store_true",
                         help="Also save grid.png with all generated images.")
     parser.add_argument("--filename-prefix", default="sample")
+    parser.add_argument("--seed", default=1, type=int)
+    parser.add_argument("--dtype", default="bf16", choices=sorted(DTYPE_MAP))
 
     argv = sys.argv[1:]
     args = parser.parse_args(argv)
@@ -101,29 +134,28 @@ def parse_args() -> argparse.Namespace:
         parser.error("--compare-preset and --compare-checkpoint must be used together")
     preset = PRESETS[args.preset]
 
-    if not option_was_set(argv, "--model"):
+    if args.model is None:
         args.model = preset["model"]
-    if not option_was_set(argv, "--cfg"):
+    if args.cfg is None:
         args.cfg = preset["cfg"]
-    if not option_was_set(argv, "--interval_min", "--interval-min"):
+    if args.interval_min is None:
         args.interval_min = preset["interval_min"]
-    if not option_was_set(argv, "--interval_max", "--interval-max"):
+    if args.interval_max is None:
         args.interval_max = preset["interval_max"]
-    if not option_was_set(argv, "--tokenizer"):
-        args.tokenizer = "sdvae"
-    if not option_was_set(argv, "--patch_size", "--patch-size"):
+    if args.patch_size is None:
         args.patch_size = 2
-    if not option_was_set(argv, "--disable_v_head", "--disable-v-head"):
+    if args.disable_v_head is None:
         args.disable_v_head = True
     if args.tokenizer in TOKENIZER_SPECS:
         spec = TOKENIZER_SPECS[args.tokenizer]
-        if not option_was_set(argv, "--token_channels", "--token-channels"):
+        if args.token_channels is None:
             args.token_channels = spec["channels"]
-        if not option_was_set(argv, "--tokenizer_patch_size", "--tokenizer-patch-size"):
+        if args.tokenizer_patch_size is None:
             args.tokenizer_patch_size = spec["patch_size"]
 
     args.auto_resume = False
     args.resume_from = None
+    args.ckpt_dir = None
     args.enable_amp = args.dtype != "fp32"
     args.amp_dtype = DTYPE_MAP[args.dtype]
     args.global_bsz = args.batch_size
