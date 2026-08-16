@@ -39,9 +39,7 @@ python reconstruction/reconstruct_images.py \
   --img-size 256 \
   --batch-size 2 \
   --max-images 8 \
-  --num-workers 4 \
-  --save-inputs \
-  --save-comparisons
+  --num-workers 4
 
 echo "Output directory:"
-ls -lh "$REPR_SCRATCH/reconstruction/smoke_n01440764"
+ls -lh "$REPR_SCRATCH/reconstruction/smoke_n01440764"/*_compare.png
