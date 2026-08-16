@@ -20,7 +20,8 @@ from frechet_distance.queue import FeatureQueue
 from frechet_distance.losses import (
     compute_frechet_distance_loss,
     diff_all_gather,
-    load_mu_and_sigma_reference, precompute_sigma_ref_sqrt,
+    load_mu_and_sigma_reference, 
+    precompute_sigma_ref_sqrt,
 )
 from frechet_distance.repr_models import load_repr_model, model_short_name
 from frechet_distance.judges import (
@@ -53,12 +54,12 @@ def get_fd_train_step(model_wo_ddp, judges, sampling_args, args, tokenizer=None)
     batch_size = args.batch_size
     num_classes = args.num_classes
     input_shape = (args.input_channels, args.input_size, args.input_size)
-
-    def fd_train_step():
+    # 这里在处理一些固定配置
+    def fd_train_step(): # 训练的真实逻辑
         z = torch.randn(batch_size, *input_shape, device="cuda") * args.noise_scale
         y = torch.randint(0, num_classes, (batch_size,), device="cuda")
         sampled = model_wo_ddp.sample_images_with_grad(z, y, sampling_args=sampling_args)
-
+        # y 和 z 控制这一步训练生成什么类别的图片（比如说猫，狗），以及图片生成的精细程度
         if tokenizer is not None:
             sampled = tokenizer.decode(tokenizer.denormalize_z(sampled))
         sampled = sampled * 0.5 + 0.5  # [-1,1] -> [0,1]
@@ -66,12 +67,14 @@ def get_fd_train_step(model_wo_ddp, judges, sampling_args, args, tokenizer=None)
         loss = torch.tensor(0.0, device="cuda")
         loss_dict = {}
 
+        # 生成一个列表全部都是，对应judges，针对这一步训练生成的samples用不同的judge提取feature
         all_new_feats = []
         for judge in judges:
             feats = extract_judge_features(judge, sampled)
             new_feats = diff_all_gather(feats)
             all_new_feats.append(new_feats)
 
+        # 计算loss，loss是生成图片和真实图片的差别
         for i, judge in enumerate(judges):
             new_feats = all_new_feats[i]
 
@@ -118,19 +121,19 @@ def get_fd_train_step(model_wo_ddp, judges, sampling_args, args, tokenizer=None)
 # ---------------------------------------------------------------------------
 
 def train_and_evaluate(args):
-    wandb_logger = setup(args)
+    wandb_logger = setup(args) # Weights & Biases
     register_preempt_handler()
 
     # -- models, optimizer, checkpoint --
     tokenizer = create_tokenizer(args)
     model, ema_model = create_generation_model(args)
     optimizer = create_optimizer(args, model, print_trainable_params=True)
-    model_wo_ddp = model
+    model_wo_ddp = model # model without distributed data parallel
 
     extra = ckpt_resume(args, model_wo_ddp, optimizer, ema_model,
                         extra_keys=["fd_queue_states"])
 
-    rng = RNGStateManager()
+    rng = RNGStateManager() # Random Number Generator
     rng.save()
     if (not args.disable_vis) or args.vis_only:
         visualize(args, model_wo_ddp, ema_model, args.current_step, rng=rng, tokenizer=tokenizer)
@@ -138,12 +141,14 @@ def train_and_evaluate(args):
             return 0
 
     # -- frechet distance evaluator --
-    repr_model_eval, feat_dim_eval, _, _ = load_repr_model("inception")
+    repr_model_eval, feat_dim_eval, _, _ = load_repr_model("inception") # repr -> representation
     fid_evaluator = FDEvaluator(repr_model_eval, feat_dim_eval, args.fid_stats_path)
 
     # -- frechet distance system: repr models, queues --
     resolve_per_model_args(args)
 
+    # 它在创建一个 frozen representation-space 裁判列表
+    # 每个裁判都有一个特征提取模型repr model、真实图片参考分布mu_ref, sigma_ref、生成图片特征队列
     judges = []
     for name, stats_path, weight, pool_type, ts in zip(
         args.fd_repr_models, args.fd_repr_stats_paths,
@@ -151,7 +156,8 @@ def train_and_evaluate(args):
     ):
         repr_model, feat_dim, _, _ = load_repr_model(name, target_size=ts)
         mu_ref, sigma_ref = load_mu_and_sigma_reference(stats_path, pool_type=pool_type)
-        queue = FeatureQueue(size=args.queue_size, feat_dim=feat_dim,
+        queue = FeatureQueue(size=args.queue_size, 
+                             feat_dim=feat_dim,
                              online_accum=args.fd_online_accum,
                              ema_beta=args.fd_ema_beta).cuda()
         short = model_short_name(name)
@@ -159,12 +165,15 @@ def train_and_evaluate(args):
         if args.fd_eigvalsh:
             sigma_ref_sqrt = precompute_sigma_ref_sqrt(sigma_ref)
         judges.append({
-            "name": short, "model": repr_model,
+            "name": short, 
+            "model": repr_model,
             "feat_dim": feat_dim,
             "pool_type": pool_type,
-            "mu_ref": mu_ref, "sigma_ref": sigma_ref,
+            "mu_ref": mu_ref, 
+            "sigma_ref": sigma_ref,
             "sigma_ref_sqrt": sigma_ref_sqrt,
-            "queue": queue, "weight": weight,
+            "queue": queue, 
+            "weight": weight,
         })
         eig_mode = "eigvalsh" if args.fd_eigvalsh else "eigvals"
         stats_mode = f"ema(beta={args.fd_ema_beta})" if args.fd_ema_beta > 0 else ("online_accum" if args.fd_online_accum else "snapshot")
@@ -174,15 +183,15 @@ def train_and_evaluate(args):
 
     fd_restored = (extra is not None
                    and "fd_queue_states" in extra
-                   and load_fd_queue_states(judges, extra["fd_queue_states"]))
+                   and load_fd_queue_states(judges, extra["fd_queue_states"])) # 是否要恢复
     if fd_restored:
         logger.info("[FD] Restored all queue states from checkpoint — skipping queue fill")
-        run_sanity_check(judges, args.queue_size, args=args)
+        run_sanity_check(judges, args.queue_size, args=args) # 从旧的check point里面恢复
     else:
         logger.info(f"[FD] Filling {len(judges)} feature queue(s) "
                     f"({args.queue_size} entries each) ...")
         fill_all_queues(judges, model_wo_ddp, args, tokenizer=tokenizer)
-        run_sanity_check(judges, args.queue_size, args=args)
+        run_sanity_check(judges, args.queue_size, args=args) # 用当前generation模型生成图片填满queue
     del extra
     torch.distributed.barrier()
 

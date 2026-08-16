@@ -15,7 +15,7 @@ from .commons import (
 
 logger = logging.getLogger("FD_loss")
 
-
+# 里面有一个forward
 class RoPEAttention(nn.Module):
     def __init__(self, hidden_size, num_heads, weight_init="scaled_variance",
                  weight_init_constant=1.0, rope_func=apply_rotary_pos_emb):

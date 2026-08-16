@@ -246,23 +246,31 @@ class pMFDenoiser(nn.Module):
         return loss, loss_dict
     
     def sample_images_with_grad(self, x, y, sampling_args=None):
-        bsz, device = x.shape[0], x.device
+        # x是传入的noise
+        # y是类别
+        bsz, device = x.shape[0], x.device # bsz是batch size
         if sampling_args is None:
             sampling_args = {}
         t_min = sampling_args.get("t_min", 0.4)
         t_max = sampling_args.get("t_max", 0.65)
         omega = sampling_args.get("cfg", 1.0)
+        # t_min: CFG 生效区间下界
+        # t_max: CFG 生效区间上界 t_min/t_max 控制 CFG 在时间轴上的哪个区间生效。
+        # omega: CFG scale，也就是条件引导强度
+        # CFG是 Classifier-Free Guidance 它是条件生成模型里常用的技巧，用来增强“按类别生成”的力量
+        # omega = 1：基本不额外增强条件
+        # omega > 1：更强地往类别 y 靠
         num_steps = sampling_args.get("num_steps", 1)
         
         t_min = torch.full((bsz,), t_min, device=device)
         t_max = torch.full((bsz,), t_max, device=device)
-        omega = torch.full((bsz,), omega, device=device)
+        omega = torch.full((bsz,), omega, device=device) # 从数字变成一个batch size长的vector
 
         t_steps = torch.linspace(1.0, 0.0, num_steps + 1, device=device)
         for i in range(num_steps):
             t_cur = t_steps[i].expand(bsz)
             h_t = (t_cur - t_steps[i + 1]).expand(bsz).view(-1, 1, 1, 1)
-            u = self.u_fn(x, t_cur, h_t, omega, t_min, t_max, y)[0]
+            u = self.u_fn(x, t_cur, h_t, omega, t_min, t_max, y)[0] # ！！！！！！！！！
             x = x - h_t * u
         return x
 
