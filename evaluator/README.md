@@ -9,3 +9,6 @@ Use `evaluator.py` to compare a reference image batch npz against a sample image
 ```bash
 python evaluator/evaluator.py reference.npz sample.npz
 ```
+
+`evaluator_transplant.py` is a separate evaluator copy provided from the
+Transplant/DCT workflow. It is kept independent from `evaluator.py`.
