@@ -79,6 +79,18 @@ class DiffusersAutoencoderKL(nn.Module):
         z = z.to(dtype=next(self.vae.parameters()).dtype)
         return self.vae.decode(z)["sample"]
 
+    def encode(self, x, sample: bool = False):
+        x = x.to(dtype=next(self.vae.parameters()).dtype)
+        posterior = self.vae.encode(x).latent_dist
+        if sample:
+            return posterior.sample()
+        return posterior.mode()
+
+    @torch.inference_mode()
+    def tokenize(self, x, sample: bool = False):
+        x = x * 2.0 - 1.0
+        return self.normalize_z(self.encode(x, sample=sample))
+
     @torch.inference_mode()
     def detokenize(self, z, decode_bsz: int | None = None):
         # chunk VAE decode to avoid OOM — scale batch size by spatial resolution
@@ -93,5 +105,9 @@ class DiffusersAutoencoderKL(nn.Module):
                 out[i:i+decode_bsz] = torch.clamp(self.decode(self.denormalize_z(z[i:i+decode_bsz])) * 0.5 + 0.5, 0.0, 1.0)
             return out
         return torch.clamp(self.decode(self.denormalize_z(z)) * 0.5 + 0.5, 0.0, 1.0)
+    
+    @torch.inference_mode()
+    def reconstruct(self, x, sample: bool = False, decode_bsz: int | None = None):
+        return self.detokenize(self.tokenize(x, sample=sample), decode_bsz=decode_bsz)
 
 VAE_models = ["sdvae"]
