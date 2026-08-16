@@ -7,7 +7,6 @@ import argparse
 import gc
 import os
 import sys
-from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,8 +17,9 @@ if str(REPO_ROOT) not in sys.path:
 import torch
 from PIL import Image
 
-from utils.builders import create_generation_model, create_tokenizer
-from utils.checkpoint_util import ckpt_resume
+import models
+from models.denoiser_imf import convert_imf_checkpoint
+from utils.builders import create_tokenizer
 from utils.data_util import to_uint8_numpy
 
 
@@ -100,10 +100,8 @@ def model_args(config: dict, checkpoint: str, batch_size: int) -> SimpleNamespac
     )
 
 
-def tokenizer_args(batch_size: int) -> SimpleNamespace:
-    args = model_args(IMF_CONFIG, checkpoint="", batch_size=batch_size)
-    args.load_from = None
-    return args
+def tokenizer_args() -> SimpleNamespace:
+    return SimpleNamespace(tokenizer="sdvae")
 
 
 def make_inputs(num_images: int, batch_size: int) -> list[dict]:
@@ -122,43 +120,77 @@ def make_inputs(num_images: int, batch_size: int) -> list[dict]:
     return batches
 
 
-def generate_model_images(config: dict, checkpoint: str, tokenizer: torch.nn.Module,
-                          batches: list[dict], batch_size: int) -> list[torch.Tensor]:
+def load_model(config: dict, checkpoint: str, batch_size: int) -> torch.nn.Module:
     args = model_args(config, checkpoint, batch_size)
-    model, ema_model = create_generation_model(args)
-    ckpt_resume(args, model, optimizer=None, model_ema=ema_model)
-    model.eval()
+    model = models.iMFDenoiser_models[args.model](
+        img_size=args.img_size,
+        patch_size=args.patch_size,
+        in_channels=args.token_channels,
+        tokenizer_patch_size=args.tokenizer_patch_size,
+        num_classes=args.num_classes,
+        label_drop_prob=args.label_drop_prob,
+        P_mean=args.P_mean,
+        P_std=args.P_std,
+        ratio_r_neq_t=args.ratio_r_neq_t,
+        cfg_beta=args.cfg_beta,
+        cfg_omega_max=args.cfg_omega_max,
+        aux_head_depth=args.aux_head_depth,
+        class_tokens=args.class_tokens,
+        time_tokens=args.time_tokens,
+        guidance_tokens=args.guidance_tokens,
+        interval_tokens=args.interval_tokens,
+        rope_2d=args.rope_2d,
+        learned_pe=args.learned_pe,
+        disable_v_head=args.disable_v_head,
+    )
 
-    images_by_batch = []
-    ema_context = ema_model.swap(model, label="online") if ema_model is not None else nullcontext()
-    with ema_context:
-        for batch in batches:
-            labels = batch["labels"].to("cuda", non_blocking=True)
-            z_t = batch["z_t"].to("cuda", non_blocking=True)
-            with torch.autocast("cuda", enabled=True, dtype=torch.bfloat16):
-                latents = model.generate(
-                    n_samples=labels.shape[0],
-                    labels=labels,
-                    cfg=args.cfg,
-                    args=args,
-                    verbose=False,
-                    z_t=z_t,
-                )
-                images = tokenizer.detokenize(latents)
-            images_by_batch.append(images.detach().cpu())
-            print(f"{config['preset']}: generated {batch['start_index'] + labels.shape[0]}", flush=True)
+    if not os.path.exists(checkpoint):
+        raise FileNotFoundError(f"Could not find checkpoint at {checkpoint}")
+    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    state_dict = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
+    state_dict = convert_imf_checkpoint(state_dict)
+    msg = model.load_state_dict(state_dict, strict=False)
+    print(f"{config['preset']}: loaded {checkpoint}: {msg}", flush=True)
+    del ckpt, state_dict
 
-    del model, ema_model
+    return model.to(device="cuda", dtype=torch.bfloat16).eval()
+
+
+def generate_model_latents(config: dict, checkpoint: str,
+                           batches: list[dict], batch_size: int) -> list[torch.Tensor]:
+    args = model_args(config, checkpoint, batch_size)
+    model = load_model(config, checkpoint, batch_size)
+
+    latents_by_batch = []
+    for batch in batches:
+        labels = batch["labels"].to("cuda", non_blocking=True)
+        z_t = batch["z_t"].to("cuda", dtype=torch.bfloat16, non_blocking=True)
+        with torch.autocast("cuda", enabled=True, dtype=torch.bfloat16):
+            latents = model.generate(
+                n_samples=labels.shape[0],
+                labels=labels,
+                cfg=args.cfg,
+                args=args,
+                verbose=False,
+                z_t=z_t,
+            )
+        latents_by_batch.append(latents.detach().cpu())
+        print(f"{config['preset']}: generated {batch['start_index'] + labels.shape[0]}", flush=True)
+
+    del model
     torch.cuda.empty_cache()
     gc.collect()
-    return images_by_batch
+    return latents_by_batch
 
 
-def save_compare_pngs(imf_images: list[torch.Tensor], imf_xl_images: list[torch.Tensor],
+def save_compare_pngs(imf_latents: list[torch.Tensor], imf_xl_latents: list[torch.Tensor],
                       batches: list[dict], output_dir: Path) -> None:
-    for left_batch, right_batch, batch in zip(imf_images, imf_xl_images, batches):
-        left_np = to_uint8_numpy(left_batch)
-        right_np = to_uint8_numpy(right_batch)
+    tokenizer = create_tokenizer(tokenizer_args())
+    for left_latents, right_latents, batch in zip(imf_latents, imf_xl_latents, batches):
+        left_images = tokenizer.detokenize(left_latents.to("cuda", non_blocking=True))
+        right_images = tokenizer.detokenize(right_latents.to("cuda", non_blocking=True))
+        left_np = to_uint8_numpy(left_images)
+        right_np = to_uint8_numpy(right_images)
         labels = batch["labels"].tolist()
         for offset, (left, right, label) in enumerate(zip(left_np, right_np, labels)):
             h, w = left.shape[:2]
@@ -181,20 +213,19 @@ def main() -> None:
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    tokenizer = create_tokenizer(tokenizer_args(args.batch_size))
     batches = make_inputs(args.num_images, args.batch_size)
 
     print(f"output_dir={output_dir}")
     print(f"num_images={args.num_images} batch_size={args.batch_size}")
     print(f"latent_shape=({LATENT_CHANNELS}, {LATENT_SIZE}, {LATENT_SIZE})")
 
-    imf_images = generate_model_images(
-        IMF_CONFIG, args.imf_checkpoint, tokenizer, batches, args.batch_size,
+    imf_latents = generate_model_latents(
+        IMF_CONFIG, args.imf_checkpoint, batches, args.batch_size,
     )
-    imf_xl_images = generate_model_images(
-        IMF_XL_CONFIG, args.imf_xl_checkpoint, tokenizer, batches, args.batch_size,
+    imf_xl_latents = generate_model_latents(
+        IMF_XL_CONFIG, args.imf_xl_checkpoint, batches, args.batch_size,
     )
-    save_compare_pngs(imf_images, imf_xl_images, batches, output_dir)
+    save_compare_pngs(imf_latents, imf_xl_latents, batches, output_dir)
     print(f"saved compare PNGs to {output_dir}")
 
 
