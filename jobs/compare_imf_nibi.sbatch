@@ -11,9 +11,9 @@ set -euo pipefail
 
 : "${IMF_CKPT_PATH:?Set IMF_CKPT_PATH to the iMF checkpoint .pth}"
 : "${IMF_XL_CKPT_PATH:?Set IMF_XL_CKPT_PATH to the iMF-XL checkpoint .pth}"
-: "${NUM_IMAGES:=8}"
-: "${BATCH_SIZE:=2}"
-: "${OUTPUT_SUBDIR:=generation/imf_vs_imf-xl_smoke}"
+: "${NUM_IMAGES:=2}"
+: "${BATCH_SIZE:=1}"
+: "${OUTPUT_SUBDIR:=generation/imf_vs_imf-xl_compare}"
 
 module load StdEnv/2023
 module load python/3.11
@@ -39,15 +39,11 @@ print("gpu:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "n
 PY
 
 python generation/generate_images.py \
-  --preset imf \
-  --checkpoint "$IMF_CKPT_PATH" \
-  --compare-preset imf-xl \
-  --compare-checkpoint "$IMF_XL_CKPT_PATH" \
+  --imf-checkpoint "$IMF_CKPT_PATH" \
+  --imf-xl-checkpoint "$IMF_XL_CKPT_PATH" \
   --output-dir "$REPR_SCRATCH/$OUTPUT_SUBDIR" \
   --num-images "$NUM_IMAGES" \
-  --batch-size "$BATCH_SIZE" \
-  --num-sampling-steps 1 \
-  --save-grid
+  --batch-size "$BATCH_SIZE"
 
 echo "Output directory:"
 ls -lh "$REPR_SCRATCH/$OUTPUT_SUBDIR"
