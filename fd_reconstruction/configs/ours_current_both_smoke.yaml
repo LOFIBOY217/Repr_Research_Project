@@ -1,0 +1,8 @@
+# Engineering only: finite-pool current-model statistics + exact replay VJP.
+extends: ours_smoke.yaml
+method: ours_current_both
+adaptive:
+  fake_stats: {mode: reencode_pool, gradient: full_pool_replay}
+train:
+  output: runs/ours_current_both_smoke
+  steps: 4

@@ -2,6 +2,14 @@
 
 验证日期：2026 年 10 月 4 日。环境为 macOS ARM64、Python 3.13.5、CPU；没有 CUDA。所有小模型结果只用于工程验证，不是 ImageNet 实验结果。
 
+## 双侧当前统计扩展
+
+新增 `ours_current_both` 后，本地完整测试为 **87 passed**，包括原 73 项与新增 14 项。新增覆盖：无任何 EMA 构造/状态；真实与重建缓存按 ψ/E+D 双版本刷新；3/7 张 microbatch 的不整除图片池，D/G 梯度分别与一次性整池计算图核对；完整 D→G 优化器更新对照；每次 1/2 个 D 更新的顺序、梯度隔离与统计版本；重放失配时禁止 optimizer step；训练 2 步→恢复到 4 步与连续 4 步逐项完全一致；独立评价；配置与 50k 防线；实际小型随机 AutoencoderKL 和 timm ViT 的 checkpointed 反向；eval 模式下 BatchNorm 缓冲不变、affine 仍有梯度。
+
+新版每次 G 更新覆盖整池，不再是当前小 batch 加历史 fake EMA。局部公式数值、梯度和恢复检查均只在本地 CPU 完成；预训练 CUDA、50k 成本与 hacking 效果仍未验证。旧配置/作业仍是原单侧当前统计方案，不能把旧短测成功当作新版验证。新版 nibi 入口为 `jobs/ours_current_both_nibi.sbatch`；它复用 smoke controller 的显式 `current_both` 模式，检查双侧版本、无 EMA、恢复一致性及当前 checkpoint 的真实/重建统计。必须以该模式自己的 `result.json` 判断是否通过。
+
+独立 CLI 产物在 `runs/verified_C_current_both_20261004/`：32 图训练池，训练 2 步后恢复到 4 步，并另跑连续 4 步。模型、目标状态和两个优化器逐位相同；另完成 32 图固定评价器评价。4 步共 2 次 D、4 次 G，真实/重建缓存分别编码 3/6 遍，192 张样本参与梯度重放；每个 loss 的双方 ψ 版本及 fake 的 E+D 版本匹配，EMA 更新计数始终为零。实现指纹为 `c6f36350fcb5ccb76ae7fb2a8e65d6c21db77ee8935fa6a2276bfe30ccd7a3a4`。Python 编译、作业 Bash 语法、依赖检查、wheel 构建和仓库外导入新模块均通过；A/B 官方核心与原 B 步骤文件未改动。
+
 ## 自动测试
 
 在 `fd_reconstruction` 下执行 `.venv/bin/python -m pytest -q`，新增 C 后的结果为 **73 passed**，包含此前 A/B 的 59 项回归测试。A/B 两组训练、恢复和端到端测试均已接入官方静态后端；B 动态统计与 whitening 直接调用官方原码，C 复用这些动态计算核心但有独立的目标与状态管理。

@@ -4,6 +4,8 @@
 
 当前实现 A：FD-only，B：AdvFD-Reconstruction，以及 C：无 static、动态提取器全参数训练、真实参考按当前 ψ 重编码。三组都是原图 → 可训练 encoder → latent → 可训练 decoder → 重建图；B 保留静态 FD 和原动态分支，C 不混入 A/B。没有像素、感知或 GAN 训练损失。C 的实现、消融和验证边界见 [C 组说明](CANDIDATE_METHOD.md)。
 
+C 新增双侧当前统计版本 `configs/ours_current_both.yaml`：真实与重建侧都按当前模型重编码同一个 50k 图片池，不使用 EMA；以两遍分块链式求导获得整池梯度。旧 `ours_reconstruction.yaml` 仍保留 fake EMA，作为不同协议的对照。新版每步覆盖整池，batch size 仅控制 microbatch；不能直接比较两者的步数。
+
 ## 已实现的范围
 
 - 单训练入口和严格配置；同时训练 E+D。
@@ -11,7 +13,7 @@
 - 官方 FD-Loss 的 Inception 特征路径，以及 timm 表征适配；提供 Inception 与 SIM 多表征配置。
 - A 与 B 的静态分支直接调用未修改的官方 `queue.py` 与 `losses.py`；这两份文件在 FD-Loss 和 AdvFD 快照中逐字节相同。固定真实参考，重建侧 EMA（A 另支持官方队列），保留 `FD / (FD.detach() + 0.01)`，单独记录 raw FD。
 - B 动态分支直接调用官方 `FeatureStatsEMA`、real whitening 和 QKV LoRA 类；保留启动及权重预热。Inception 全参数、SigLIP/MAE rank-16 LoRA，不采用候选方法的三点改动。
-- 前向不修改统计，优化步骤完成后统一提交；固定表征仍可将输入梯度传给重建模型。
+- A/B 和旧 C 的 EMA 前向不提交历史统计，优化步骤完成后统一提交；新版 C 的当前参数缓存按版本失效/重算。固定表征仍可将输入梯度传给重建模型。
 - 保存模型、静态表征、参考统计、重建统计、优化器、RNG、数据位置和代码指纹；B 额外保存动态表征、两侧 EMA、D 优化器和更新计数，支持完整断点恢复。
 - 独立重建导图、多表征 FD、PSNR、SSIM、LPIPS 与逐图残差诊断。正式评价不接受少于 50k 图片，也不使用训练 EMA 代替整批评价统计。
 - 单 GPU 作业模板、测试和离线小模型 smoke 配置。
@@ -101,7 +103,7 @@ FD-only 的表征与真实参考均固定，保持原基线。第三项研究设
 
 ## 目录与方法边界
 
-`src/recon_fd/` 分为 `tokenizers`、`representations`、`objectives`、`engine`、`evaluation`、`diagnostics`，与架构设计一致；`vendor/fd_loss` 和 `vendor/advfd` 隔离官方计算核心。静态和动态统计前向均不修改缓存，`commit()` 带版本检查；重复提交会失败。
+`src/recon_fd/` 分为 `tokenizers`、`representations`、`objectives`、`engine`、`evaluation`、`diagnostics`，与架构设计一致；`vendor/fd_loss` 和 `vendor/advfd` 隔离官方计算核心。历史 EMA/队列的 `commit()` 带版本检查；当前池缓存按模型版本刷新，新版重建缓存同时检查 ψ 与 E+D。
 
 三项设计的配置位置为 `static.enabled`、`adaptive.trainable_scope`、`adaptive.real_stats.mode`。A、B、C 均有独立执行路径；B 强制保留 static、论文参数范围和真实侧 EMA，避免混入 C 的消融。
 

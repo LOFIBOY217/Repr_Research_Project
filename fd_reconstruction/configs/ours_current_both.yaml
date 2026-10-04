@@ -1,0 +1,12 @@
+# C extension: CURRENT psi and E+D on both sides; no real or fake EMA.
+# One optimizer step covers the entire paired pool, not one small batch.
+extends: ours_reconstruction.yaml
+method: ours_current_both
+adaptive:
+  fake_stats: {mode: reencode_pool, gradient: full_pool_replay}
+train:
+  output: runs/ours_current_both
+  # This is a cost-validation starting point, not a matched A/B/C budget.
+  steps: 4
+  save_every: 1
+  log_every: 1

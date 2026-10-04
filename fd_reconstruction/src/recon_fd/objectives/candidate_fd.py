@@ -47,10 +47,13 @@ class CandidateFD(nn.Module):
         pool = selected_dataset(dataset, reference["samples"], reference["seed"], True)
         self.real_reference = RealReference(self.extractor.dimension, reference,
                                             self.config["ema_beta"], pool, config["data"]["workers"])
-        self.fake_statistics = AdvStatsEMA(self.extractor.dimension, self.config["ema_beta"])
+        self.fake_statistics = self.build_fake_statistics(self.extractor.dimension)
         self.register_buffer("critic_updates", torch.tensor(0, dtype=torch.long))
         self.register_buffer("initialized", torch.tensor(False))
         self.set_critic_trainable(False)
+
+    def build_fake_statistics(self, dimension):
+        return AdvStatsEMA(dimension, self.config["ema_beta"])
 
     @property
     def spaces(self):

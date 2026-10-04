@@ -4,7 +4,7 @@ from pathlib import Path
 import yaml
 from .provenance import fingerprint
 
-CANDIDATE_METHODS = {"ours", "ours_add_static", "ours_lora", "ours_real_ema", "ours_fixed_reference"}
+CANDIDATE_METHODS = {"ours", "ours_add_static", "ours_lora", "ours_real_ema", "ours_fixed_reference", "ours_current_both"}
 
 
 def merge(base, update):
@@ -63,6 +63,8 @@ def validate(config):
                                 "steps_per_update", "lora", "gradient_checkpointing"}
     if config["method"] in CANDIDATE_METHODS:
         allowed["adaptive"] |= {"norm_eps", "initialization_samples", "initialization_batch_size"}
+    if config["method"] == "ours_current_both":
+        allowed["adaptive"] |= {"fake_stats"}
     for section, keys in allowed.items():
         if set(config[section]) != keys:
             raise ValueError(f"Unknown or missing keys in {section}: {set(config[section]) ^ keys}")
@@ -160,6 +162,13 @@ def validate_candidate(config):
     for key in ("initialization_samples", "initialization_batch_size", "update_freq", "steps_per_update"):
         if not isinstance(adaptive[key], int) or adaptive[key] < (2 if key == "initialization_samples" else 1):
             raise ValueError(f"Invalid adaptive.{key}")
+    if method == "ours_current_both":
+        if adaptive["fake_stats"] != {"mode": "reencode_pool", "gradient": "full_pool_replay"}:
+            raise ValueError("Current-both C requires fresh full-pool moments and full-pool replay gradients")
+        if adaptive["initialization_samples"] != real["samples"]:
+            raise ValueError("Current-both C uses the same paired pool for real and reconstructed images")
+        if adaptive["initialization_batch_size"] != config["train"]["batch_size"]:
+            raise ValueError("Current-both C uses train.batch_size for all reconstruction microbatches")
     if adaptive["start_step"] != 0 or adaptive["warmup_steps"] != 0:
         raise ValueError("C starts after statistics initialization with nonzero loss; no static-only warmup")
     for key in ("lr", "weight", "whiten_eps", "grad_clip"):

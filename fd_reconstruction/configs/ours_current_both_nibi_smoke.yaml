@@ -1,0 +1,6 @@
+extends: ours_nibi_smoke.yaml
+method: ours_current_both
+adaptive:
+  fake_stats: {mode: reencode_pool, gradient: full_pool_replay}
+train:
+  output: ${FD_C_SMOKE_ROOT}/current_both

@@ -9,12 +9,14 @@ from recon_fd.objectives.static_fd import StaticSpace
 from recon_fd.objectives.official_fd import OfficialFDStatistics, OfficialStaticFD, precompute_sigma_ref_sqrt
 from recon_fd.objectives.adaptive_fd import AdvFD
 from recon_fd.objectives.candidate_fd import CandidateFD
+from recon_fd.objectives.current_both import CurrentBothFD
 from recon_fd.representations import build_representation
 from recon_fd.provenance import write_json, state_fingerprint
 from .checkpoint import save_checkpoint, restore_checkpoint
 from .adversarial import adversarial_g_step
 from .gradients import checked_grad_norm
 from .candidate import candidate_g_step
+from .current_both import current_both_g_step
 
 
 def build_objective(config, dataset, device):
@@ -25,8 +27,11 @@ def build_objective(config, dataset, device):
             baseline = deepcopy(config)
             baseline["method"] = "fd_only"
             static, identities = build_objective(baseline, dataset, device)
-        objective = CandidateFD(config, dataset, static).to(device)
+        objective = (CurrentBothFD(config, dataset) if config["method"] == "ours_current_both"
+                     else CandidateFD(config, dataset, static)).to(device)
         identities["candidate_real_pool"] = objective.real_reference.pool.identity
+        if isinstance(objective, CurrentBothFD):
+            identities["candidate_fake_pool"] = objective.real_reference.pool.identity
         return objective, identities
     static = config["static"]
     reference_data = selected_dataset(dataset, static["reference_samples"], config["data"]["seed"], True)
@@ -121,6 +126,10 @@ def run_training(config, model, objective, dataset, reference_identities, device
         if isinstance(objective, CandidateFD):
             pool = objective.real_reference.pool
             write_json(run / "real_reference_manifest.json", {"identity": pool.identity, "sample_ids": pool.ids})
+            if isinstance(objective, CurrentBothFD):
+                write_json(run / "reconstruction_reference_manifest.json", {
+                    "identity": pool.identity, "sample_ids": pool.ids, "paired_with_real": True,
+                    "gradient_estimator": "full_pool_two_pass_chain_rule"})
     if resume_state is None:
         initialize_statistics(model, objective, dataset, config, device)
         start = 0
@@ -137,13 +146,19 @@ def run_training(config, model, objective, dataset, reference_identities, device
                        "references": reference_identities, "resumed_from_step": start,
                        "torch_version": torch.__version__, "schema": 1})
     write_json(run / "config.json", config)
-    sampler = ResumableBatchSampler(len(dataset), config["train"]["batch_size"], config["data"]["seed"], start, config["train"]["steps"])
-    loader = DataLoader(dataset, batch_sampler=sampler, num_workers=config["data"]["workers"],
-                        generator=torch.Generator().manual_seed(config["data"]["seed"]), pin_memory=device.type == "cuda")
+    if isinstance(objective, CurrentBothFD):
+        loader = range(start, config["train"]["steps"])
+    else:
+        sampler = ResumableBatchSampler(len(dataset), config["train"]["batch_size"], config["data"]["seed"], start, config["train"]["steps"])
+        loader = DataLoader(dataset, batch_sampler=sampler, num_workers=config["data"]["workers"],
+                            generator=torch.Generator().manual_seed(config["data"]["seed"]), pin_memory=device.type == "cuda")
     try:
         for step, batch in enumerate(loader, start + 1):
-            images = batch["image"].to(device)
-            if isinstance(objective, CandidateFD):
+            images = None if isinstance(objective, CurrentBothFD) else batch["image"].to(device)
+            if isinstance(objective, CurrentBothFD):
+                metrics = current_both_g_step(model, objective, optimizer, critic_optimizer,
+                                               config["train"]["grad_clip"], step - 1)
+            elif isinstance(objective, CandidateFD):
                 metrics = candidate_g_step(model, objective, optimizer, critic_optimizer, images,
                                             config["train"]["grad_clip"], step - 1)
             elif isinstance(objective, AdvFD):
@@ -151,8 +166,14 @@ def run_training(config, model, objective, dataset, reference_identities, device
                                              config["train"]["grad_clip"], step - 1)
             else:
                 metrics = g_step(model, objective, optimizer, images, config["train"]["grad_clip"])
-            metrics.update(step=step, samples_seen=step * config["train"]["batch_size"],
-                           fd_batch_size=len(batch["id"]), sample_ids=batch["id"])
+            if isinstance(objective, CurrentBothFD):
+                count = len(objective.real_reference.pool)
+                metrics.update(step=step, samples_seen=step * count, fd_batch_size=count,
+                               sample_ids_manifest="reconstruction_reference_manifest.json",
+                               optimizer_step_unit="full_paired_pool")
+            else:
+                metrics.update(step=step, samples_seen=step * config["train"]["batch_size"],
+                               fd_batch_size=len(batch["id"]), sample_ids=batch["id"])
             with (run / "train.jsonl").open("a") as handle:
                 handle.write(json.dumps(metrics, allow_nan=False) + "\n")
             if step % config["train"]["log_every"] == 0:
