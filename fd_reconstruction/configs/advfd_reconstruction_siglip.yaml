@@ -1,0 +1,6 @@
+# Paper rank 16, with remaining LoRA settings from the official SigLIP script.
+extends: advfd_reconstruction_mae.yaml
+adaptive:
+  representation: siglip
+train:
+  output: runs/advfd_reconstruction_siglip

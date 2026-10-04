@@ -1,0 +1,8 @@
+extends: base.yaml
+static:
+  representations:
+    - {name: inception, kind: inception, weights: '', pool: cls, weight: 1.0}
+    - {name: siglip, kind: timm, model_name: vit_so400m_patch16_siglip_256.v2_webli, target_size: 224, pool: cls, weight: 1.0}
+    - {name: mae, kind: timm, model_name: vit_large_patch16_224.mae, target_size: 224, pool: cls, weight: 1.0}
+train:
+  output: runs/fd_only_sim

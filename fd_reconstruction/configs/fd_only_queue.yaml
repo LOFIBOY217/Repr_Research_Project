@@ -1,0 +1,5 @@
+extends: base.yaml
+static:
+  statistics: queue
+train:
+  output: runs/fd_only_inception_queue

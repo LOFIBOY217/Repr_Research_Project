@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reconstruction-fd"
+version = "0.1.0"
+description = "Controlled image-reconstruction FD hacking experiments"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.2", "numpy>=1.24", "Pillow>=10", "PyYAML>=6"]
+
+[project.optional-dependencies]
+vision = ["torchvision>=0.17", "timm>=1.0", "diffusers>=0.30", "accelerate>=0.30", "safetensors>=0.4", "lpips>=0.1.4", "scikit-image>=0.22"]
+test = ["pytest>=8", "scipy>=1.11"]
+
+[project.scripts]
+recon-fd-train = "recon_fd.cli:train_main"
+recon-fd-evaluate = "recon_fd.cli:evaluate_main"
+recon-fd-reference = "recon_fd.cli:reference_main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+recon_fd = ["FD_LOSS_LICENSE.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

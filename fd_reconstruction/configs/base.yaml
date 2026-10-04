@@ -1,0 +1,74 @@
+schema_version: 1
+method: fd_only
+runtime:
+  device: cuda
+  seed: 217
+  threads: 4
+data:
+  kind: imagenet
+  resolution: 256
+  train_path: ${IMAGENET_ROOT}/train
+  val_path: ${IMAGENET_ROOT}/val
+  workers: 4
+  seed: 217
+  synthetic_count: 64
+tokenizer:
+  kind: autoencoder_kl
+  checkpoint: ${TOKENIZER_CHECKPOINT}
+  local_files_only: true
+  gradient_checkpointing: true
+  trainable_scope: encoder_decoder
+static:
+  enabled: true
+  statistics: ema
+  ema_beta: 0.999
+  queue_size: 50000
+  reference_samples: 50000
+  initialization_samples: 50000
+  norm_eps: 0.01
+  reference_cache: cache/references
+  representations:
+    - name: inception
+      kind: inception
+      weights: ''
+      pool: cls
+      weight: 1.0
+adaptive:
+  enabled: false
+  trainable_scope: full
+  real_stats:
+    mode: ema
+train:
+  output: runs/fd_only_inception
+  steps: 10000
+  batch_size: 16
+  lr: 0.000001
+  weight_decay: 0.0
+  betas: [0.9, 0.95]
+  grad_clip: 1.0
+  grad_accumulation: 1
+  save_every: 1000
+  log_every: 10
+evaluation:
+  num_samples: 50000
+  batch_size: 32
+  engineering_only: false
+  paired_metrics: [psnr, ssim, lpips]
+  representations:
+    - name: inception
+      kind: inception
+      weights: ''
+      pool: cls
+      weight: 1.0
+    - name: dinov2
+      kind: timm
+      model_name: vit_large_patch14_dinov2.lvd142m
+      target_size: 256
+      pool: cls
+      weight: 1.0
+    - name: clip
+      kind: timm
+      model_name: vit_large_patch14_clip_224.openai
+      target_size: 256
+      pool: cls
+      weight: 1.0

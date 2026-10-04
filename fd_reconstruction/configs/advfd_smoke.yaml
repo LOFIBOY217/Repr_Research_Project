@@ -1,0 +1,39 @@
+# Engineering-only: shortened activation/warmup and random tiny networks.
+extends: advfd_reconstruction.yaml
+runtime:
+  device: cpu
+  threads: 1
+data:
+  kind: synthetic
+  resolution: 16
+  workers: 0
+  synthetic_count: 64
+tokenizer:
+  kind: tiny
+  checkpoint: ''
+  gradient_checkpointing: false
+static:
+  reference_samples: 32
+  initialization_samples: 32
+  queue_size: 32
+  reference_cache: cache/advfd_smoke
+  representations:
+    - {name: tiny, kind: tiny, seed: 173, weight: 1.0}
+adaptive:
+  representation: tiny
+  start_step: 2
+  warmup_steps: 2
+train:
+  output: runs/advfd_smoke
+  batch_size: 8
+  steps: 6
+  save_every: 2
+  log_every: 1
+evaluation:
+  engineering_only: true
+  num_samples: 32
+  batch_size: 8
+  paired_metrics: [psnr, ssim]
+  representations:
+    - {name: tiny, kind: tiny, seed: 173, weight: 1.0}
+    - {name: tiny_holdout, kind: tiny, seed: 997, weight: 1.0}

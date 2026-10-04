@@ -1,0 +1,42 @@
+extends: base.yaml
+runtime:
+  device: cuda
+  threads: 4
+data:
+  train_path: ${FD_SMOKE_ROOT}/images/train
+  val_path: ${FD_SMOKE_ROOT}/images/val
+  workers: 2
+static:
+  reference_samples: 128
+  initialization_samples: 128
+  queue_size: 128
+  reference_cache: ${FD_SMOKE_ROOT}/cache
+  representations:
+    - name: inception
+      kind: inception
+      weights: ${INCEPTION_WEIGHTS}
+      pool: cls
+      weight: 1.0
+train:
+  output: ${FD_SMOKE_ROOT}/real_training
+  steps: 3
+  batch_size: 2
+  save_every: 3
+  log_every: 1
+evaluation:
+  num_samples: 32
+  batch_size: 2
+  engineering_only: true
+  paired_metrics: [psnr, ssim]
+  representations:
+    - name: inception
+      kind: inception
+      weights: ${INCEPTION_WEIGHTS}
+      pool: cls
+      weight: 1.0
+    - name: dinov2
+      kind: timm
+      model_name: vit_large_patch14_dinov2.lvd142m
+      target_size: 256
+      pool: cls
+      weight: 1.0

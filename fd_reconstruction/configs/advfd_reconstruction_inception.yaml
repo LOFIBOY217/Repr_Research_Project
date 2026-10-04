@@ -1,0 +1,8 @@
+# Matched single-static-space baseline for comparison to fd_only_inception.
+# This is NOT the paper's main SIM static recipe.
+extends: advfd_reconstruction.yaml
+static:
+  representations:
+    - {name: inception, kind: inception, weights: '', pool: cls, weight: 1.0}
+train:
+  output: runs/advfd_reconstruction_inception

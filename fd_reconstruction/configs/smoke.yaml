@@ -1,0 +1,34 @@
+extends: base.yaml
+runtime:
+  device: cpu
+  threads: 1
+data:
+  kind: synthetic
+  resolution: 16
+  workers: 0
+tokenizer:
+  kind: tiny
+  checkpoint: ''
+  gradient_checkpointing: false
+static:
+  ema_beta: 0.9
+  queue_size: 32
+  reference_samples: 32
+  initialization_samples: 32
+  representations:
+    - {name: tiny, kind: tiny, seed: 173, pool: cls, weight: 1.0}
+train:
+  output: runs/smoke
+  steps: 6
+  batch_size: 8
+  lr: 0.001
+  save_every: 3
+  log_every: 1
+evaluation:
+  num_samples: 32
+  batch_size: 8
+  engineering_only: true
+  paired_metrics: [psnr, ssim]
+  representations:
+    - {name: tiny, kind: tiny, seed: 173, pool: cls, weight: 1.0}
+    - {name: tiny_holdout, kind: tiny, seed: 999, pool: cls, weight: 1.0}

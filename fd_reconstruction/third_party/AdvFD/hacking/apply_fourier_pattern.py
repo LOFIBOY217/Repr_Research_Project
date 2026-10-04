@@ -1,0 +1,639 @@
+"""Apply a learned tiled Fourier pattern to an image directory.
+
+This is a lightweight post-processing utility: it does not load pMF,
+Inception, or CLIP.  It accepts either the exact ``fourier_pattern.npy``
+export or a Fourier pattern checkpoint produced by
+``pmf_fourier_universal.py``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import json
+import math
+import os
+import random
+import threading
+from pathlib import Path
+
+import numpy as np
+import torch
+from PIL import Image, ImageOps
+
+
+IMAGE_SUFFIXES = {
+    ".bmp",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".tif",
+    ".tiff",
+    ".webp",
+}
+
+
+def _center_crop_arr(
+    image: Image.Image,
+    image_size: int,
+) -> Image.Image:
+    """ADM-style resize of the short side followed by a center crop."""
+    while min(*image.size) >= 2 * image_size:
+        image = image.resize(
+            tuple(size // 2 for size in image.size),
+            resample=Image.Resampling.BOX,
+        )
+    scale = image_size / min(*image.size)
+    image = image.resize(
+        tuple(round(size * scale) for size in image.size),
+        resample=Image.Resampling.BICUBIC,
+    )
+    array = np.asarray(image)
+    crop_y = (array.shape[0] - image_size) // 2
+    crop_x = (array.shape[1] - image_size) // 2
+    return Image.fromarray(
+        array[
+            crop_y : crop_y + image_size,
+            crop_x : crop_x + image_size,
+        ]
+    )
+
+
+def _prepare_spatial_pattern(
+    pattern: torch.Tensor,
+    *,
+    normalize_rms: bool,
+) -> torch.Tensor:
+    if pattern.ndim == 4 and pattern.shape[0] == 1:
+        pattern = pattern[0]
+    if pattern.ndim != 3 or pattern.shape[0] != 3:
+        raise ValueError(
+            "Pattern must have shape [3,H,W] or [1,3,H,W], "
+            f"got {tuple(pattern.shape)}"
+        )
+    pattern = pattern.detach().float()
+    pattern = pattern - pattern.mean(dim=(-2, -1), keepdim=True)
+    rms = pattern.square().mean().sqrt()
+    if not torch.isfinite(rms) or float(rms) <= 1e-12:
+        raise ValueError("Pattern has zero or non-finite RMS")
+    if normalize_rms:
+        pattern = pattern / rms
+    return pattern.contiguous()
+
+
+def _pattern_from_checkpoint(path: Path) -> torch.Tensor:
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    if (
+        isinstance(checkpoint, dict)
+        and "spatial_pattern" in checkpoint
+    ):
+        pattern = checkpoint["spatial_pattern"]
+        if not isinstance(pattern, torch.Tensor):
+            raise ValueError(
+                f"{path} has a non-tensor spatial_pattern export"
+            )
+        return pattern.float()
+    state = checkpoint.get("pattern", checkpoint)
+    required = {"coeff", "cos_basis", "sin_basis"}
+    if not isinstance(state, dict) or not required.issubset(state):
+        available = sorted(state) if isinstance(state, dict) else type(state)
+        raise ValueError(
+            f"{path} is not a Fourier pattern checkpoint. "
+            f"Expected keys {sorted(required)}, found {available}"
+        )
+    coeff = state["coeff"].float()
+    cos_basis = state["cos_basis"].float()
+    sin_basis = state["sin_basis"].float()
+    if coeff.ndim != 3 or coeff.shape[0] != 3 or coeff.shape[-1] != 2:
+        raise ValueError(
+            f"Invalid Fourier coefficient shape: {tuple(coeff.shape)}"
+        )
+    if (
+        cos_basis.shape != sin_basis.shape
+        or cos_basis.ndim != 3
+        or cos_basis.shape[0] != coeff.shape[1]
+    ):
+        raise ValueError(
+            "Checkpoint coefficient and Fourier-basis shapes do not match"
+        )
+    cosine = torch.einsum("cm,mhw->chw", coeff[..., 0], cos_basis)
+    sine = torch.einsum("cm,mhw->chw", coeff[..., 1], sin_basis)
+    return cosine + sine
+
+
+def load_spatial_pattern(
+    path: str | Path,
+    *,
+    normalize_rms: bool = True,
+) -> torch.Tensor:
+    path = Path(path).expanduser().resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Pattern not found: {path}")
+    if path.suffix.lower() == ".npy":
+        pattern = torch.from_numpy(np.load(path))
+    elif path.suffix.lower() in {".pt", ".pth"}:
+        pattern = _pattern_from_checkpoint(path)
+    else:
+        raise ValueError(
+            f"Unsupported pattern file {path}; use .npy, .pt, or .pth"
+        )
+    return _prepare_spatial_pattern(
+        pattern,
+        normalize_rms=normalize_rms,
+    )
+
+
+def tile_pattern(
+    pattern: torch.Tensor,
+    height: int,
+    width: int,
+    *,
+    shift_y: int = 0,
+    shift_x: int = 0,
+) -> torch.Tensor:
+    """Return a phase-shifted tiled pattern with shape ``[3,H,W]``."""
+    pattern = torch.roll(
+        pattern,
+        shifts=(int(shift_y), int(shift_x)),
+        dims=(-2, -1),
+    )
+    return pattern.repeat(
+        1,
+        math.ceil(height / pattern.shape[-2]),
+        math.ceil(width / pattern.shape[-1]),
+    )[:, :height, :width]
+
+
+def apply_pattern(
+    image_01: torch.Tensor,
+    pattern: torch.Tensor,
+    *,
+    alpha: float,
+    alpha_space: str = "model",
+    shift_y: int = 0,
+    shift_x: int = 0,
+) -> torch.Tensor:
+    """Apply the pattern to one RGB image in ``[0,1]``.
+
+    ``alpha_space='model'`` matches the training experiment:
+    ``clip((2*x-1) + alpha*u, -1, 1)``.  Therefore model-space alpha
+    ``8/255`` corresponds to pixel-space pattern RMS ``4/255``.
+    """
+    if image_01.ndim != 3 or image_01.shape[0] != 3:
+        raise ValueError(
+            f"image_01 must have shape [3,H,W], got {tuple(image_01.shape)}"
+        )
+    tiled = tile_pattern(
+        pattern.to(device=image_01.device, dtype=image_01.dtype),
+        image_01.shape[-2],
+        image_01.shape[-1],
+        shift_y=shift_y,
+        shift_x=shift_x,
+    )
+    if alpha_space == "model":
+        image_model = image_01.mul(2.0).sub(1.0)
+        patched_model = image_model.add(tiled, alpha=float(alpha))
+        return patched_model.clamp(-1.0, 1.0).add(1.0).mul(0.5)
+    if alpha_space == "pixel":
+        return image_01.add(tiled, alpha=float(alpha)).clamp(0.0, 1.0)
+    raise ValueError(f"Unknown alpha space: {alpha_space}")
+
+
+def _discover_images(input_dir: Path, recursive: bool) -> list[Path]:
+    iterator = input_dir.rglob("*") if recursive else input_dir.glob("*")
+    return sorted(
+        path
+        for path in iterator
+        if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
+    )
+
+
+def _output_path(
+    source: Path,
+    input_dir: Path,
+    output_dir: Path,
+    output_format: str,
+) -> Path:
+    relative = source.relative_to(input_dir)
+    destination = output_dir / relative
+    if output_format == "png":
+        destination = destination.with_suffix(".png")
+    return destination
+
+
+def _load_rgb(
+    path: Path,
+    *,
+    crop_size: int,
+) -> tuple[torch.Tensor, Image.Image | None]:
+    with Image.open(path) as opened:
+        image = ImageOps.exif_transpose(opened)
+        alpha_channel = (
+            image.getchannel("A").copy()
+            if "A" in image.getbands()
+            else None
+        )
+        rgb_image = image.convert("RGB")
+        if crop_size > 0:
+            # Match the ADM/ImageNet preprocessing used to compute the
+            # repository's reference FID statistics: resize the short side
+            # to crop_size, then take a centered square crop.
+            rgb_image = _center_crop_arr(rgb_image, crop_size)
+            if alpha_channel is not None:
+                alpha_channel = _center_crop_arr(alpha_channel, crop_size)
+        rgb = np.asarray(rgb_image, dtype=np.float32).copy()
+    tensor = torch.from_numpy(rgb).permute(2, 0, 1).div_(255.0)
+    return tensor, alpha_channel
+
+
+def _save_image(
+    image_01: torch.Tensor,
+    destination: Path,
+    alpha_channel: Image.Image | None,
+    *,
+    jpeg_quality: int,
+) -> None:
+    array = (
+        image_01.mul(255.0)
+        .round()
+        .clamp_(0, 255)
+        .to(torch.uint8)
+        .permute(1, 2, 0)
+        .cpu()
+        .numpy()
+    )
+    output = Image.fromarray(array)
+    if alpha_channel is not None and destination.suffix.lower() in {
+        ".png",
+        ".tif",
+        ".tiff",
+        ".webp",
+    }:
+        output.putalpha(alpha_channel)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    save_kwargs: dict[str, object] = {}
+    if destination.suffix.lower() in {".jpg", ".jpeg"}:
+        save_kwargs.update(quality=jpeg_quality, subsampling=0)
+    temporary = destination.with_name(
+        f".{destination.stem}.tmp-{os.getpid()}-"
+        f"{threading.get_ident()}{destination.suffix}"
+    )
+    try:
+        output.save(temporary, **save_kwargs)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _is_valid_image(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        with Image.open(path) as image:
+            image.verify()
+    except (OSError, SyntaxError, ValueError):
+        return False
+    return True
+
+
+def get_args_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        "Apply a learned Fourier pattern to an image directory"
+    )
+    parser.add_argument("--input_dir", required=True)
+    parser.add_argument("--output_dir", required=True)
+    parser.add_argument(
+        "--pattern",
+        required=True,
+        help="fourier_pattern.npy or Fourier pattern .pth checkpoint",
+    )
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=8 / 255,
+        help="pattern strength; interpreted in --alpha_space",
+    )
+    parser.add_argument(
+        "--alpha_space",
+        choices=["model", "pixel"],
+        default="model",
+        help="model matches the pMF [-1,1] experiment",
+    )
+    parser.add_argument(
+        "--preserve_pattern_scale",
+        action="store_true",
+        help=(
+            "do not normalize the loaded pattern to unit RMS; use its "
+            "stored amplitude exactly"
+        ),
+    )
+    parser.add_argument("--shift_y", type=int, default=0)
+    parser.add_argument("--shift_x", type=int, default=0)
+    parser.add_argument(
+        "--crop_size",
+        type=int,
+        default=256,
+        help=(
+            "ADM-style center-crop size applied before the pattern; "
+            "default 256 matches ImageNet reference statistics. Use 0 "
+            "to preserve each input image's original dimensions"
+        ),
+    )
+    parser.add_argument(
+        "--output_format",
+        choices=["preserve", "png"],
+        default="preserve",
+    )
+    parser.add_argument(
+        "--side_by_side",
+        action="store_true",
+        help=(
+            "save one visualization with the cropped original on the left "
+            "and the patched image on the right; do not use these composite "
+            "images for FID evaluation"
+        ),
+    )
+    parser.add_argument("--jpeg_quality", type=int, default=95)
+    parser.add_argument(
+        "--no_recursive",
+        action="store_false",
+        dest="recursive",
+        help="only process images directly inside --input_dir",
+    )
+    parser.set_defaults(recursive=True)
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="skip output images that already exist",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=1,
+        help="parallel image decode/encode workers",
+    )
+    parser.add_argument(
+        "--log_every",
+        type=int,
+        default=1000,
+        help="print progress every N newly processed images",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="process only the first N images; 0 processes all",
+    )
+    parser.add_argument(
+        "--random_sample",
+        type=int,
+        default=0,
+        help="randomly select N images; mutually exclusive with --limit",
+    )
+    parser.add_argument(
+        "--sample_seed",
+        type=int,
+        default=2026,
+        help="reproducible seed used by --random_sample",
+    )
+    return parser
+
+
+def main(args: argparse.Namespace) -> None:
+    input_dir = Path(args.input_dir).expanduser().resolve()
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    if not input_dir.is_dir():
+        raise NotADirectoryError(f"Input directory not found: {input_dir}")
+    if input_dir == output_dir:
+        raise ValueError("--output_dir must differ from --input_dir")
+    try:
+        output_dir.relative_to(input_dir)
+    except ValueError:
+        pass
+    else:
+        raise ValueError(
+            "--output_dir cannot be inside --input_dir; this prevents "
+            "accidentally processing previous outputs"
+        )
+    if not math.isfinite(args.alpha) or args.alpha < 0:
+        raise ValueError("--alpha must be finite and non-negative")
+    if not 1 <= args.jpeg_quality <= 100:
+        raise ValueError("--jpeg_quality must be in [1,100]")
+    if args.limit < 0:
+        raise ValueError("--limit must be non-negative")
+    if args.random_sample < 0:
+        raise ValueError("--random_sample must be non-negative")
+    if args.limit and args.random_sample:
+        raise ValueError("--limit and --random_sample are mutually exclusive")
+    if args.overwrite and args.resume:
+        raise ValueError("--overwrite and --resume are mutually exclusive")
+    if args.num_workers < 1:
+        raise ValueError("--num_workers must be positive")
+    if args.log_every < 1:
+        raise ValueError("--log_every must be positive")
+    if args.crop_size < 0:
+        raise ValueError("--crop_size must be non-negative")
+    if args.num_workers > 1:
+        # Each image operation is small. Avoid nesting PyTorch's CPU thread
+        # pool inside the outer image-level worker pool.
+        torch.set_num_threads(1)
+
+    pattern_path = Path(args.pattern).expanduser().resolve()
+    pattern = load_spatial_pattern(
+        pattern_path,
+        normalize_rms=not args.preserve_pattern_scale,
+    )
+    sources = _discover_images(input_dir, args.recursive)
+    discovered_images = len(sources)
+    if args.random_sample:
+        if args.random_sample > len(sources):
+            raise ValueError(
+                f"--random_sample={args.random_sample} exceeds the "
+                f"{len(sources)} discovered images"
+            )
+        sources = random.Random(args.sample_seed).sample(
+            sources, args.random_sample
+        )
+        sources.sort()
+    if args.limit:
+        sources = sources[: args.limit]
+    if not sources:
+        raise FileNotFoundError(f"No supported images found in {input_dir}")
+
+    destinations = [
+        _output_path(
+            source,
+            input_dir,
+            output_dir,
+            args.output_format,
+        )
+        for source in sources
+    ]
+    if len(set(destinations)) != len(destinations):
+        raise ValueError(
+            "Multiple inputs map to the same output name; use "
+            "--output_format preserve"
+        )
+    existing = [path for path in destinations if path.exists()]
+    if existing and not args.overwrite and not args.resume:
+        preview = "\n".join(str(path) for path in existing[:5])
+        raise FileExistsError(
+            f"{len(existing)} output files already exist. Pass --overwrite "
+            f"to replace them or --resume to skip them. First paths:\n"
+            f"{preview}"
+        )
+    if args.resume:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=args.num_workers
+        ) as executor:
+            valid_outputs = list(
+                executor.map(_is_valid_image, destinations)
+            )
+        pending = [
+            (source, destination)
+            for source, destination, valid in zip(
+                sources, destinations, valid_outputs
+            )
+            if not valid
+        ]
+        invalid_existing = sum(
+            destination.exists() and not valid
+            for destination, valid in zip(
+                destinations, valid_outputs
+            )
+        )
+    else:
+        pending = list(zip(sources, destinations))
+        invalid_existing = 0
+    resumed_existing = len(sources) - len(pending)
+
+    print(
+        f"pattern={pattern_path} shape={tuple(pattern.shape)} "
+        f"mean={float(pattern.mean()):.6g} "
+        f"rms={float(pattern.square().mean().sqrt()):.6g}"
+    )
+    pattern_rms = float(pattern.square().mean().sqrt())
+    effective_pixel_rms = pattern_rms * (
+        args.alpha / 2.0
+        if args.alpha_space == "model"
+        else args.alpha
+    )
+    print(
+        f"images={len(sources)} pending={len(pending)} "
+        f"invalid_existing={invalid_existing} "
+        f"workers={args.num_workers} alpha={args.alpha:.10g} "
+        f"alpha_space={args.alpha_space} "
+        f"effective_pixel_rms={effective_pixel_rms:.10g} "
+        f"crop_size={args.crop_size} "
+        f"side_by_side={args.side_by_side} "
+        f"phase=({args.shift_y},{args.shift_x})"
+    )
+
+    def process_one(
+        item: tuple[Path, Path],
+    ) -> None:
+        source, destination = item
+        image, alpha_channel = _load_rgb(
+            source,
+            crop_size=args.crop_size,
+        )
+        patched = apply_pattern(
+            image,
+            pattern,
+            alpha=args.alpha,
+            alpha_space=args.alpha_space,
+            shift_y=args.shift_y,
+            shift_x=args.shift_x,
+        )
+        output_image = (
+            torch.cat((image, patched), dim=-1)
+            if args.side_by_side
+            else patched
+        )
+        output_alpha = (
+            Image.new(
+                "L",
+                (alpha_channel.width * 2, alpha_channel.height),
+                color=255,
+            )
+            if args.side_by_side and alpha_channel is not None
+            else alpha_channel
+        )
+        _save_image(
+            output_image,
+            destination,
+            output_alpha,
+            jpeg_quality=args.jpeg_quality,
+        )
+
+    if args.num_workers == 1:
+        results = map(process_one, pending)
+        for index, _ in enumerate(results, start=1):
+            if index % args.log_every == 0 or index == len(pending):
+                print(
+                    f"processed {index}/{len(pending)} pending images "
+                    f"(total complete={resumed_existing + index}/"
+                    f"{len(sources)})"
+                )
+    else:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=args.num_workers
+        ) as executor:
+            results = executor.map(process_one, pending)
+            for index, _ in enumerate(results, start=1):
+                if index % args.log_every == 0 or index == len(pending):
+                    print(
+                        f"processed {index}/{len(pending)} pending images "
+                        f"(total complete={resumed_existing + index}/"
+                        f"{len(sources)})"
+                    )
+
+    missing = [path for path in destinations if not path.is_file()]
+    if missing:
+        raise RuntimeError(
+            f"{len(missing)} expected output images are missing; "
+            f"first path: {missing[0]}"
+        )
+
+    manifest = {
+        "input_dir": str(input_dir),
+        "output_dir": str(output_dir),
+        "pattern": str(pattern_path),
+        "pattern_shape": list(pattern.shape),
+        "pattern_mean": float(pattern.mean()),
+        "pattern_rms": float(pattern.square().mean().sqrt()),
+        "pattern_scale_preserved": args.preserve_pattern_scale,
+        "alpha": args.alpha,
+        "alpha_space": args.alpha_space,
+        "effective_pixel_rms": effective_pixel_rms,
+        "crop_size": args.crop_size,
+        "side_by_side": args.side_by_side,
+        "side_by_side_layout": (
+            "original_left_patched_right"
+            if args.side_by_side
+            else None
+        ),
+        "shift_y": args.shift_y,
+        "shift_x": args.shift_x,
+        "num_images": len(sources),
+        "num_discovered_images": discovered_images,
+        "processed_this_run": len(pending),
+        "resumed_existing": resumed_existing,
+        "repaired_invalid_images": invalid_existing,
+        "num_workers": args.num_workers,
+        "random_sample": args.random_sample,
+        "sample_seed": args.sample_seed if args.random_sample else None,
+        "selected_images": [
+            str(source.relative_to(input_dir)) for source in sources
+        ],
+        "output_format": args.output_format,
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with (output_dir / "apply_pattern_manifest.json").open("w") as handle:
+        json.dump(manifest, handle, indent=2)
+    print(f"done: {output_dir}")
+
+
+if __name__ == "__main__":
+    main(get_args_parser().parse_args())

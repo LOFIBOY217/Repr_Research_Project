@@ -1,0 +1,32 @@
+# B: SIM static FD + Inception adversarial FD.
+# Adv branch follows the JiT SIM recipe / paper Table 6, not our candidate.
+# E+D optimizer, batch and run budget remain the shared reconstruction setup.
+extends: fd_only_sim.yaml
+method: advfd_reconstruction
+adaptive:
+  enabled: true
+  trainable_scope: paper
+  representation: inception
+  weight: 0.1
+  ema_beta: 0.99
+  whiten_eps: 0.001
+  lr: 0.000001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0
+  grad_clip: 1.0
+  start_step: 1000
+  warmup_steps: 4000
+  update_freq: 2
+  steps_per_update: 1
+  gradient_checkpointing: false
+  real_stats:
+    mode: ema
+    update_freq: 1
+  lora:
+    # Paper says rank 16; current upstream ablation scripts default to rank 8.
+    rank: 16
+    alpha: 16.0
+    targets: [attn.qkv]
+    dropout: 0.0
+train:
+  output: runs/advfd_reconstruction_sim

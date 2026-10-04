@@ -1,0 +1,10 @@
+# Paper rank 16, with remaining LoRA settings from the official MAE script.
+extends: advfd_reconstruction.yaml
+adaptive:
+  representation: mae
+  lr: 0.00002
+  gradient_checkpointing: true
+  real_stats:
+    update_freq: 2
+train:
+  output: runs/advfd_reconstruction_mae

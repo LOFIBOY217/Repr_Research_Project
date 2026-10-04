@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+runs/
+cache/
+*.pt
+*.pth
+*.npz
+!tests/fixtures/*.npz
+# User-supplied reference archive has no explicit redistribution license.
+third_party/Grounded-Frechet-Loss-main/
+# Host-specific run records remain local, not source-code distribution.
+validation/nibi-smoke-*.json
