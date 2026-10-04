@@ -2,6 +2,18 @@
 
 验证日期：2026 年 10 月 4 日。环境为 macOS ARM64、Python 3.13.5、CPU；没有 CUDA。所有小模型结果只用于工程验证，不是 ImageNet 实验结果。
 
+## ABC 工程验收
+
+当前完整本地回归为 **92 passed**。在此前 87 项基础上新增 A/B 验收配置检查、A/B 各自完整的验收流程、拒绝无 SLURM 的集群入口、异常后审计钩子恢复，共 5 项。A/B 两组都实际执行训练到 2 步、恢复到 4 步、再次恢复到 6 步，并与独立连续 6 步比较；0/2/4/6 步的模型、统计、优化器、RNG 和数据状态逐位一致，训练图片顺序相同。初始与最终检查点均完成 32 图独立固定评价及完整导图清单检查。比较器能拒绝参数、RNG 或 D 优化器缺失等错误。
+
+新入口 `jobs/ab_acceptance_nibi.sbatch` 在单张 GPU 上依次验收 A 和 B；一组失败仍执行另一组并分别报告。使用当前官方数值核心、同一预训练 SD-VAE、Inception 和确定性 128 图 ImageNet train 子集；val 子集为 32 图。小模型和预训练模型分别执行上述恢复流程，记录阶段耗时、峰值显存、环境、commit 和实现指纹。入口仅允许 SLURM allocation，且检查提交时指定的 commit；不在 login node 运行 ML。
+
+A 检查 E+D 更新、静态特征和真实参考完全不变、官方统计每步提交一次。B 另外检查动态参数启动前不变、启动后更新，静态分支不变，两个 EMA 及 D 更新次数正确。实际优化器调用期间审计梯度范围和执行顺序，要求每步只重建一次，按 D→G→统计提交执行；同时保留不更新 D 的步骤。为在短测中覆盖激活边界，B 的 start/warmup 显式改成 2/2，正式配置仍是 1000/4000；损失核心不改。此 GPU 验收限定 Inception 全参数分支，不包含 SIM 多静态表征或预训练 MAE/SigLIP LoRA。
+
+C 使用既有 `ours_current_both` 单卡短测，验收双侧统计的当前参数版本、整池梯度、无 EMA、恢复和独立评价。当前 C 作业 23225144 仍为 PENDING，原因是 GPU 节点不可用；旧 A 和旧 C 作业及 checkout 未修改。新增 A/B 的主机专用提交记录保存在忽略的 `validation/nibi-smoke-*.json`，不把排队、Git 同步或本地测试当作 GPU 通过。只有 A、B 的各自 `result.json` 和新版 C 的 `result.json` 都为 passed 且作业正常结束，才能标记这套基础 CUDA 工程验收完成。
+
+这轮不验收 50k 运行成本、多表征/LPIPS 完整集成或视觉 hacking 效果。源码 `src/recon_fd` 没有因新增验收脚本改变，实现指纹仍为 `c6f36350fcb5ccb76ae7fb2a8e65d6c21db77ee8935fa6a2276bfe30ccd7a3a4`；排队中的 C 不需要因本次测试脚本更新而重提。
+
 ## 双侧当前统计扩展
 
 新增 `ours_current_both` 后，本地完整测试为 **87 passed**，包括原 73 项与新增 14 项。新增覆盖：无任何 EMA 构造/状态；真实与重建缓存按 ψ/E+D 双版本刷新；3/7 张 microbatch 的不整除图片池，D/G 梯度分别与一次性整池计算图核对；完整 D→G 优化器更新对照；每次 1/2 个 D 更新的顺序、梯度隔离与统计版本；重放失配时禁止 optimizer step；训练 2 步→恢复到 4 步与连续 4 步逐项完全一致；独立评价；配置与 50k 防线；实际小型随机 AutoencoderKL 和 timm ViT 的 checkpointed 反向；eval 模式下 BatchNorm 缓冲不变、affine 仍有梯度。

@@ -111,7 +111,7 @@ A 配置中未启用的 `adaptive.real_stats.mode: ema` 是预留值；B 中它�
 
 输出在 `runs/`，参考统计在 `cache/`，均不提交 Git。断点恢复可增加 `train.steps` 或改变日志间隔，不能更换训练数据、目标统计、学习率或实现代码。若回到较早检查点而原目录已有更晚日志，应改用新输出目录，防止混合轨迹。普通梯度累积不等于大 batch FD，所以首版明确只允许 `grad_accumulation=1`。
 
-`jobs/` 提供单卡模板。A 的 nibi smoke 已在此前提交，记录见 `validation/nibi-smoke-23218660.json`，其中状态仅代表提交时的检查，不是实时状态。本次 B 代码没有同步到该作业目录，也没有提交 B 作业。集群执行前设置 `FD_PROJECT`、`FD_PYTHON`、数据与权重路径；通用训练模板通过 `FD_CONFIG` 选择 A 或 B。
+`jobs/` 提供单卡模板。当前 A/B 工程验收入口是 `jobs/ab_acceptance_nibi.sbatch`，单卡依次执行两组的预训练小范围训练、两次恢复、连续训练对照、顺序/梯度审计及独立评价；C 使用 `jobs/ours_current_both_nibi.sbatch`。检查范围与尚未通过的 GPU 项见 [验收记录](VALIDATION.md)。A/B 新入口使用独立 checkout，不覆盖旧 A 作业的代码；排队不代表验收完成。集群执行前设置 `FD_PROJECT`、`FD_PYTHON`、数据与权重路径；通用训练模板通过 `FD_CONFIG` 选择 A 或 B。
 
 ## 来源与待验证项
 
@@ -127,6 +127,6 @@ A 配置中未启用的 `adaptive.real_stats.mode: ema` 是预留值；B 中它�
 
 代码、配置与作业脚本统一通过本地 commit/push → GitHub → nibi pull 同步；不再用 rsync/scp 覆盖服务器代码。规则保存在 [AGENTS.md](AGENTS.md)。仓库为 `LOFIBOY217/Repr_Research_Project`，重建开发分支为 `codex/fd-reconstruction-baselines`；后续服务器更新使用该分支的 `git pull --ff-only`，先确认工作区干净且无作业依赖正在修改的目录，并核对 commit。
 
-nibi 已建立独立的干净 GitHub checkout `Repr_Research_Project_fd_reconstruction`，之后在该目录的 `fd_reconstruction/` 工作并通过 pull 更新。旧 `Repr_Research_Project` 工作目录仍有未提交文件，旧 smoke 作业 23218660 在 2026 年 10 月 4 日本次检查时仍为 PENDING 且使用旧目录；不覆盖、切换或 pull 旧目录，也没有取消该作业。代码同步和作业重新提交是两件事，不能把 push/pull 成功写成 GPU 测试已通过。
+nibi 的旧 C checkout `Repr_Research_Project_fd_reconstruction` 和双侧 C checkout `Repr_Research_Project_fd_current_both` 均有排队作业依赖，不能直接 pull 改写。A/B 工程验收使用另外的独立 GitHub checkout。旧 `Repr_Research_Project` 工作目录仍有未提交文件，旧 A smoke 作业 23218660 在 2026 年 10 月 4 日本次检查时仍为 PENDING 且使用旧目录；不覆盖、切换或 pull 旧目录，也没有取消该作业。代码同步和作业重新提交是两件事，不能把 push/pull 成功写成 GPU 测试已通过。
 
 运行输出、数据、权重、环境和主机专用作业记录不推送。公开仓库不包含用户提供的 Grounded 原始源码；该本地参考不影响本项目运行或测试。FD-Loss 和 AdvFD 的公开 MIT 快照及必要许可可以随代码分发。

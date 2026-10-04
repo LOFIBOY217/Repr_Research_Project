@@ -1,0 +1,31 @@
+# B: official-code D->G, single Inception static + dynamic branch.
+# Shortened activation/warmup tests both sides of activation in six steps.
+# Not the main SIM recipe, original training budget, or a scientific comparison.
+extends: advfd_reconstruction_inception.yaml
+data:
+  train_path: ${FD_AB_SMOKE_ROOT}/images/train
+  val_path: ${FD_AB_SMOKE_ROOT}/images/val
+  workers: 2
+static:
+  reference_samples: 128
+  initialization_samples: 128
+  queue_size: 128
+  reference_cache: ${FD_AB_SMOKE_ROOT}/cache
+  representations:
+    - {name: inception, kind: inception, weights: '${INCEPTION_WEIGHTS}', pool: cls, weight: 1.0}
+adaptive:
+  start_step: 2
+  warmup_steps: 2
+train:
+  output: ${FD_AB_SMOKE_ROOT}/B/real_resumed
+  steps: 6
+  batch_size: 2
+  save_every: 2
+  log_every: 1
+evaluation:
+  engineering_only: true
+  num_samples: 32
+  batch_size: 2
+  paired_metrics: [psnr, ssim]
+  representations:
+    - {name: inception, kind: inception, weights: '${INCEPTION_WEIGHTS}', pool: cls, weight: 1.0}
