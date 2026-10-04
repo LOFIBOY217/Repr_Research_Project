@@ -10,7 +10,7 @@ G-step 最小化 `static normalized FD + lambda(t) * dynamic normalized FD`。D-
 
 | 项目 | B 的实现 |
 | --- | --- |
-| 静态分支 | 特征网络与真实参考固定；重建特征统计按 EMA 更新 |
+| 静态分支 | 特征网络与真实参考固定；与 A 共用逐字节匹配两仓库的官方 queue/losses 核心 |
 | 动态真实统计 | 初值直接复制参考均值与协方差，不进行额外 ddof 修正；随后按原机制 EMA 更新 |
 | 动态重建统计 | 到动态分支启动时，复制匹配静态分支当时的重建均值与二阶原始矩，不复制过时初值 |
 | Whitening | 保留原代码对真实和重建协方差的对角加载、真实变换 detach、FP64 分解和 FP32 返回 |
@@ -18,7 +18,7 @@ G-step 最小化 `static normalized FD + lambda(t) * dynamic normalized FD`。D-
 | 网络运行模式 | 动态表征始终 eval，固定 BatchNorm 运行缓冲；这不等于冻结 affine 参数 |
 | 统计提交 | 前向只计算候选值；按 G 侧的新 ψ 特征提交一次，不把 D 前向重复计入 EMA |
 
-实现位于 `objectives/adaptive_fd.py`、`objectives/whitening.py`、`representations/lora.py` 与 `engine/adversarial.py`。运行时不从第三方仓库导入同名包。
+`vendor/advfd/adversarial.py` 原样保存官方完整文件；动态统计继承其中的 `FeatureStatsEMA`，whitening 直接调用其函数。`vendor/advfd/lora.py` 保留官方 `LoRAQKVLinear` 类原文，仅调整导入与打包。`objectives/adaptive_fd.py`、`objectives/whitening.py`、`representations/lora.py` 和 `engine/adversarial.py` 负责重建接口、冻结范围及状态生命周期；运行时不依赖 `third_party` 同名包。
 
 ## 配置与原始来源
 
@@ -36,7 +36,9 @@ G-step 最小化 `static normalized FD + lambda(t) * dynamic normalized FD`。D-
 
 ## 每轮执行与恢复
 
-沿用官方可执行代码的 D-then-G 顺序；论文示意算法展示 G-then-D，二者不能混为同一执行顺序。本迁移以官方代码作为执行依据。
+当前代码沿用官方可执行实现的 D-then-G 顺序；[论文 Algorithm 1 第 6–16 行](https://arxiv.org/html/2608.11205v1) 则是 G-then-D，而且用更新后的 G 重新生成。两者不能声称同时一致。已向用户提出选择，在得到回复前保持已有顺序，不擅自改为另一种训练轨迹。
+
+代码依据为固定快照 `main_fd.py`：第 1148 行附近先生成带梯度样本，第 1763 行执行 D optimizer，第 1822 行起冻结 ψ 并计算 G 侧动态特征，第 2878 行才执行 G optimizer；重建适配仍只前向一次 E+D。顺序回归测试同时检查有 D 更新和跳过 D 更新的轮次。
 
 1. 用 E+D 计算一次重建并保留 G 所需计算图。D 只接收 detached 重建和真实图片，E+D 参数在 D 阶段冻结。
 2. 达到启动位置且满足更新频率时，更新 ψ；不提交真实或重建 EMA。
@@ -49,7 +51,11 @@ G-step 最小化 `static normalized FD + lambda(t) * dynamic normalized FD`。D-
 
 ## 公平比较与未复制部分
 
-A/B 继续共享本项目的 tokenizer、数据、E+D AdamW、batch 和训练预算。当前公共默认是单 GPU、batch 16、E+D 学习率 1e-6、常数学习率和 10k 步；这些是重建实验设置，不冒充原论文的多 GPU、global batch 1024、125k 步和生成器 warmup/cosine 日程。未移植生成器的 EDM 模型权重 EMA；评价一直使用在线 E+D 权重。统计 EMA 与模型权重 EMA 是不同机制。
+A/B 继续共享本项目的 tokenizer、数据、E+D AdamW、batch 和训练预算。当前公共默认是单 GPU、batch 16、E+D 学习率 1e-6、常数学习率和 10k 步；这些是重建实验设置，不冒充原论文的多 GPU、global batch 1024、125k 步和生成器 warmup/cosine 日程。是否恢复原训练预算与日程也待用户确认，不会把小 batch 的 EMA 宣称为等效大 batch。
+
+G AdamW betas 0.9/0.95、weight decay 0、不裁剪梯度，与官方默认对齐。D 的裁剪阈值为 1，二者不能混用。未移植生成器的 EDM 模型权重 EMA；FD-Loss 论文表 B.2 写模型 EMA 为 none，但官方 JiT 脚本启用 EDM EMA，属于另一处论文与脚本差异。当前一直用在线 E+D 权重评价；统计 EMA 与模型权重 EMA 是不同机制。
+
+其他仍需区分的设置：本项目以同一批原图作为重建输入和动态真实样本，属于任务迁移；固定训练真实参考选 50k，官方参考来自完整 ImageNet train；重建统计初始化总数同为 50k，但分块 batch 目前为 16 而非官方 256。当前训练 FP32、中心裁剪且无随机翻转，也不是原论文 bf16 和训练增强的完整复现。损失公式、可训练范围正确不等于这些设置已经对齐。
 
 B 默认 SIM 时应与 A 的 `fd_only_sim.yaml` 对照；若先用 A 的单 Inception，则选 B 的匹配配置。不可把静态网络数量不同造成的差异全部归因于动态学习。
 
@@ -57,7 +63,7 @@ B 默认 SIM 时应与 A 的 `fd_only_sim.yaml` 对照；若先用 A 的单 Ince
 
 本迁移另外保留现有工程保护：非有限值停止、原子 checkpoint、显式统计提交、参考指纹检查。正常路径的数值与梯度做官方实现对照；异常路径不照搬上游的静默跳步行为。
 
-A 后续已改为直接调用未修改的官方 FD-Loss 核心；本次未改变 B 的静态实现。B 静态分支仍使用先前的稳定化 FD、EMA 适配，包括平方根边界导数及 FP64 返回等差异。不能把目前 A/B 的所有数值路径宣称为完全相同；正式因果对照前须另行核对或对齐这一点，不将实现差异归因于动态对抗分支。
+A/B 静态计算核心现已统一为官方原码，并检查同配置下 loss、输入梯度及状态严格一致。动态 EMA 也不再通过自写协方差更新重构二阶矩，而是直接执行官方原位 mean/m2 更新；连续 12 步的缓冲和梯度与原文件严格一致。以上修正消除已发现的核心实现偏差，不消除前述预算、预处理、评价协议及论文/代码顺序分歧。
 
 ## 运行入口与验证范围
 

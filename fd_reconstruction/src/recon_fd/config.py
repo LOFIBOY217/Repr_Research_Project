@@ -82,8 +82,8 @@ def validate(config):
         raise ValueError("FD training batch must contain >=2 images")
     if config["train"]["grad_accumulation"] != 1:
         raise NotImplementedError("Gradient accumulation is not a pooled FD batch; first version requires 1")
-    if config["train"]["lr"] <= 0 or config["train"]["grad_clip"] <= 0:
-        raise ValueError("Positive learning rate and gradient clipping are required")
+    if config["train"]["lr"] <= 0 or not 0 <= config["train"]["grad_clip"] < float("inf"):
+        raise ValueError("Positive learning rate and nonnegative finite gradient clipping are required")
     if config["data"]["resolution"] < 8:
         raise ValueError("Image resolution must be >=8")
     for field in ("representations",):
@@ -103,11 +103,11 @@ def validate(config):
                     raise ValueError("FD weights must be positive")
                 if spec["kind"] == "inception" and (spec.get("pool", "cls") != "cls" or spec.get("target_size", 299) != 299):
                     raise ValueError("Official Inception uses pool_2048 with internal TF resize to 299")
-    if config["method"] == "fd_only":
+    if config["method"] in {"fd_only", "advfd_reconstruction"}:
         if config["static"]["initialization_samples"] != config["static"]["queue_size"]:
-            raise ValueError("A follows official FD-Loss: initialization_samples must equal queue_size")
+            raise ValueError("Official static FD: initialization_samples must equal queue_size")
         if config["static"]["norm_eps"] != 0.01:
-            raise ValueError("A keeps the official recipe's normalization epsilon 0.01")
+            raise ValueError("Static FD keeps the official recipe's normalization epsilon 0.01")
         if config["static"]["statistics"] == "ema" and config["static"]["ema_beta"] <= 0:
             raise ValueError("Official EMA requires positive beta; use queue for beta=0")
     if config["static"]["statistics"] in {"queue", "queue_online"}:

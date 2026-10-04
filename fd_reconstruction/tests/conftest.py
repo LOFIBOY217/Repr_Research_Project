@@ -2,8 +2,8 @@ import importlib.util
 from pathlib import Path
 import pytest
 import torch
-from recon_fd.objectives.statistics import RunningMoments, EMAStats
-from recon_fd.objectives.static_fd import StaticSpace, StaticFD
+from recon_fd.objectives.statistics import RunningMoments
+from recon_fd.objectives.static_fd import StaticSpace
 from recon_fd.objectives.official_fd import OfficialFDStatistics, OfficialStaticFD, precompute_sigma_ref_sqrt
 from recon_fd.representations import build_representation
 from recon_fd.tokenizers import TinyReconstructor
@@ -28,19 +28,8 @@ def upstream_module(path, name):
 
 
 @pytest.fixture
-def small_system():
-    model = TinyReconstructor()
-    extractor = build_representation({"name": "tiny", "kind": "tiny", "seed": 173})
-    data = torch.rand(24, 3, 8, 8)
-    real, fake = RunningMoments(), RunningMoments()
-    with torch.no_grad():
-        real.update(extractor(data))
-        fake.update(extractor(model(data)))
-    ema = EMAStats(6, 0.9)
-    ema.initialize(fake.moments())
-    objective = StaticFD({"tiny": StaticSpace(extractor, real.moments(), ema)})
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
-    return model, objective, optimizer, data
+def small_system(official_small_system):
+    return official_small_system
 
 
 @pytest.fixture

@@ -27,8 +27,10 @@ fd_reconstruction/
 │   ├── data.py                  # ImageNet、样本 ID、配对变换
 │   ├── tokenizers/              # E→latent→D，适配 Grounded 的模型
 │   ├── representations/         # Inception、CLIP、DINOv2 等，独立于 E
+│   ├── vendor/                  # FD-Loss 与 AdvFD 官方原码，固定版本并校验
 │   ├── objectives/
-│   │   ├── frechet.py           # 纯 FD 数值计算，不修改状态
+│   │   ├── frechet.py           # 独立评价 FD，不用于 A/B 训练核心
+│   │   ├── official_fd.py       # A/B 静态分支，调用官方 queue/losses
 │   │   ├── statistics.py        # 固定统计、当前参数重算、可选 EMA、静态特征队列
 │   │   ├── whitening.py         # whitening 与数值正则化
 │   │   ├── static_fd.py         # 仅供 FD-only、AdvFD 和消融
@@ -79,7 +81,7 @@ fd_reconstruction/
 
 ## 一个训练迭代怎么走
 
-为便于对照官方 AdvFD，建议实现采用 D-step 后 G-step 的顺序；图中的左右位置只是两个阶段，不限定执行先后。所有动态方法共用这个顺序。
+当前 B 采用官方可执行代码的 D-step 后 G-step；但论文 Algorithm 1 明确采用 G-step 后 D-step，并用更新后的 G 重新生成。这个冲突不能仅凭示意图解释为完全一致，最终执行依据仍待用户确认。以下描述的是当前代码顺序，候选方法确定后再锁定共同日程，不能把两种顺序混用后归因于方法。
 
 1. 读取原图 batch，以当前 E+D 计算重建并保留 G 计算图；D-step 只接收它的 detached 副本。根据配置准备当前 ψ 下的真实参考候选统计。B 的 EMA 模式读取历史状态参与估计；C 拟定的直接重算模式重新编码指定真实样本。
 2. 若本轮需要 D-step，固定重建模型的参数与可变运行状态，更新 ψ，最大化动态 FD。真实参考用于 whitening 的 detach 规则保持与原实现一致；不在每次 loss 前向中提交有状态统计。

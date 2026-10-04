@@ -9,8 +9,8 @@
 - 单训练入口和严格配置；同时训练 E+D。
 - Grounded 风格的 AutoencoderKL 后验均值重建，支持该格式的 SD-VAE、VA-VAE、REPA-E 权重。其他 tokenizer 的源码已归档，但还没有全部迁移为运行适配器。
 - 官方 FD-Loss 的 Inception 特征路径，以及 timm 表征适配；提供 Inception 与 SIM 多表征配置。
-- A 直接调用未修改的官方 FD-Loss `queue.py` 与 `losses.py`：固定真实参考，重建侧 EMA、完整队列或官方增量队列；保留 `FD / (FD.detach() + 0.01)`，并单独记录 raw FD。
-- B 的动态分支保留 real whitening、真实与重建侧 EMA、原方法的启动及权重预热；Inception 全参数、SigLIP/MAE rank-16 LoRA，不采用候选方法的三点改动。
+- A 与 B 的静态分支直接调用未修改的官方 `queue.py` 与 `losses.py`；这两份文件在 FD-Loss 和 AdvFD 快照中逐字节相同。固定真实参考，重建侧 EMA（A 另支持官方队列），保留 `FD / (FD.detach() + 0.01)`，单独记录 raw FD。
+- B 动态分支直接调用官方 `FeatureStatsEMA`、real whitening 和 QKV LoRA 类；保留启动及权重预热。Inception 全参数、SigLIP/MAE rank-16 LoRA，不采用候选方法的三点改动。
 - 前向不修改统计，优化步骤完成后统一提交；固定表征仍可将输入梯度传给重建模型。
 - 保存模型、静态表征、参考统计、重建统计、优化器、RNG、数据位置和代码指纹；B 额外保存动态表征、两侧 EMA、D 优化器和更新计数，支持完整断点恢复。
 - 独立重建导图、多表征 FD、PSNR、SSIM、LPIPS 与逐图残差诊断。正式评价不接受少于 50k 图片，也不使用训练 EMA 代替整批评价统计。
@@ -62,7 +62,9 @@ export TOKENIZER_CHECKPOINT=/absolute/path/to/autoencoder_kl_checkpoint
 
 A 的 FD 计算以官方代码为准，不自行改造估计器或特征值梯度。固定版本 `5c03b8112fec8b9432631e4ce053c0d918cc24bc` 的 `frechet_distance/queue.py` 与 `losses.py` 原样复制到 `src/recon_fd/vendor/fd_loss/`，测试逐字节校验；`objectives/official_fd.py` 仅负责重建接口和状态生命周期。默认沿用官方 JiT recipe 的 eigvalsh 路径、EMA beta 0.999 与归一化 epsilon 0.01。完整队列使用官方 FP32 特征快照；`--set static.statistics=queue_online` 调用官方增量 sum/outer-product 算法。初始化直接调用官方累积与收尾函数，并强制 `initialization_samples == queue_size`。
 
-不再让 A 调用此前自写的稳定化 FD 和 EMA/队列实现，包括自定义平方根导数和最终非负截断。数值异常由训练器检查并停止，不悄悄换另一套损失。统计在优化成功后提交一次，使用本轮前向的 detached 特征；正常步骤与官方在优化前入队的最终状态一致。这是 FD 核心的原样复用，不是把生成模型、数据管线和多 GPU 训练预算也搬进重建实验。B 的实现及公共独立评价此次保持不变；正式归因比较前，仍需单独核对 B 静态分支与这一官方后端的数值边界。
+两组训练均不再调用此前自写的稳定化 FD 和 EMA/队列核心，包括自定义平方根导数和最终非负截断。数值异常由训练器检查并停止，不悄悄换另一套损失。统计在优化成功后提交一次，使用本轮前向的 detached 特征；正常步骤与官方在优化前入队的最终状态一致。相同配置下 A/B 静态分支的数值、梯度和提交状态有严格相等测试。G 默认不裁剪梯度，与官方默认一致；B 的 D 梯度仍按官方 recipe 裁剪为 1。
+
+这是计算核心的原样复用，不是完整生成论文复现。当前 B 执行官方代码的 D→G，而论文 Algorithm 1 是 G→D 并重新生成；执行依据的最终选择仍待用户确认。共享的单卡 batch 16、10k 步、常数学习率也不是论文的 global batch 1024、125k 步与 warmup/cosine。原文与代码冲突、训练预算及其他迁移边界详见 [对齐说明](ADVFD_BASELINE.md)，在这些问题解决前不宣称 A/B 全面复现论文。
 
 训练集从 `train/` 读取，评价集从 `val/` 读取；若实际名称为 `validation/`，显式覆盖 `data.val_path`。当前统一使用 Grounded/ADM 的中心裁剪，暂不引入随机增强，确保参考统计、输入和各基线匹配。训练真实参考从完整训练集固定随机抽取 50k，避免按类别目录取前 50k 导致偏样本；重建统计也先用 50k 初始化。初始化可能较慢，不发生参数更新。
 
@@ -99,7 +101,7 @@ FD-only 的表征与真实参考均固定，保持原基线。第三项研究设
 
 ## 目录与方法边界
 
-`src/recon_fd/` 分为 `tokenizers`、`representations`、`objectives`、`engine`、`evaluation`、`diagnostics`，与架构设计一致；`vendor/fd_loss` 隔离未修改的官方计算核心。A 的官方统计前向与 B 的 `statistics.preview()` 均不修改缓存，`commit()` 带版本检查；重复提交会失败。
+`src/recon_fd/` 分为 `tokenizers`、`representations`、`objectives`、`engine`、`evaluation`、`diagnostics`，与架构设计一致；`vendor/fd_loss` 和 `vendor/advfd` 隔离官方计算核心。静态和动态统计前向均不修改缓存，`commit()` 带版本检查；重复提交会失败。
 
 三项设计的配置位置为 `static.enabled`、`adaptive.trainable_scope`、`adaptive.real_stats.mode`。A 和 B 已可执行；B 强制保留 static、论文参数范围和真实侧 EMA，避免混入 C 的消融。候选方法 C 尚未实现。
 
@@ -123,6 +125,6 @@ A 配置中未启用的 `adaptive.real_stats.mode: ema` 是预留值；B 中它�
 
 代码、配置与作业脚本统一通过本地 commit/push → GitHub → nibi pull 同步；不再用 rsync/scp 覆盖服务器代码。规则保存在 [AGENTS.md](AGENTS.md)。仓库为 `LOFIBOY217/Repr_Research_Project`，重建开发分支为 `codex/fd-reconstruction-baselines`；后续服务器更新使用该分支的 `git pull --ff-only`，先确认工作区干净且无作业依赖正在修改的目录，并核对 commit。
 
-nibi 的旧工作目录仍包含未提交文件和此前复制的同名目录，且旧 smoke 作业 23218660 在此次检查时仍处于 PENDING。因此本次不直接切换、覆盖或 pull 旧目录，也不取消作业；需先安排干净的 Git checkout 或在保留现有工作的前提下完成迁移。不要把 GitHub 已 push 写成 nibi 已 pull。
+nibi 已建立独立的干净 GitHub checkout `Repr_Research_Project_fd_reconstruction`，之后在该目录的 `fd_reconstruction/` 工作并通过 pull 更新。旧 `Repr_Research_Project` 工作目录仍有未提交文件，旧 smoke 作业 23218660 在 2026 年 10 月 4 日本次检查时仍为 PENDING 且使用旧目录；不覆盖、切换或 pull 旧目录，也没有取消该作业。代码同步和作业重新提交是两件事，不能把 push/pull 成功写成 GPU 测试已通过。
 
 运行输出、数据、权重、环境和主机专用作业记录不推送。公开仓库不包含用户提供的 Grounded 原始源码；该本地参考不影响本项目运行或测试。FD-Loss 和 AdvFD 的公开 MIT 快照及必要许可可以随代码分发。

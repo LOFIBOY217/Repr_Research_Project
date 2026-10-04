@@ -5,34 +5,31 @@ from torch.utils.data import DataLoader
 from recon_fd.config import training_signature
 from recon_fd.data import ResumableBatchSampler, sequential_loader, selected_dataset
 from recon_fd.evaluation.reference import get_reference
-from recon_fd.objectives.statistics import EMAStats, RunningMoments
-from recon_fd.objectives.static_fd import StaticFD, StaticSpace
+from recon_fd.objectives.static_fd import StaticSpace
 from recon_fd.objectives.official_fd import OfficialFDStatistics, OfficialStaticFD, precompute_sigma_ref_sqrt
 from recon_fd.objectives.adaptive_fd import AdvFD
 from recon_fd.representations import build_representation
 from recon_fd.provenance import write_json, state_fingerprint
 from .checkpoint import save_checkpoint, restore_checkpoint
 from .adversarial import adversarial_g_step
+from .gradients import checked_grad_norm
 
 
 def build_objective(config, dataset, device):
     static = config["static"]
-    official_a = config["method"] == "fd_only"
     reference_data = selected_dataset(dataset, static["reference_samples"], config["data"]["seed"], True)
     spaces, identities = {}, {}
     for spec in static["representations"]:
         extractor = build_representation(spec).to(device)
         reference, identity = get_reference(extractor, reference_data, static["reference_cache"],
                                             config["train"]["batch_size"], device, config["data"]["workers"])
-        state = (OfficialFDStatistics(extractor.dimension, static["queue_size"], static["statistics"],
-                                      static["ema_beta"]) if official_a else
-                 EMAStats(extractor.dimension, static["ema_beta"]))
-        root_kwargs = {"root_function": precompute_sigma_ref_sqrt} if official_a else {}
+        # FD-Loss and AdvFD publish byte-identical static queue/loss kernels.
+        state = OfficialFDStatistics(extractor.dimension, static["queue_size"], static["statistics"],
+                                     static["ema_beta"])
         spaces[spec["name"]] = StaticSpace(extractor, reference, state.to(device), spec.get("weight", 1),
-                                         **root_kwargs)
+                                         root_function=precompute_sigma_ref_sqrt)
         identities[spec["name"]] = identity
-    objective_class = OfficialStaticFD if official_a else StaticFD
-    objective = objective_class(spaces, static["norm_eps"]).to(device)
+    objective = OfficialStaticFD(spaces, static["norm_eps"]).to(device)
     if config["method"] == "advfd_reconstruction":
         objective = AdvFD(objective, config["adaptive"]).to(device)
     return objective, identities
@@ -41,8 +38,6 @@ def build_objective(config, dataset, device):
 @torch.no_grad()
 def initialize_statistics(model, objective, dataset, config, device):
     subset = selected_dataset(dataset, config["static"]["initialization_samples"], config["data"]["seed"] + 1, True)
-    accumulators = {name: RunningMoments() for name in objective.spaces}
-    chunks = {name: [] for name in objective.spaces}
     previous_mode = model.training
     model.eval()
     try:
@@ -50,19 +45,9 @@ def initialize_statistics(model, objective, dataset, config, device):
             reconstruction = model(batch["image"].to(device))
             for name, space in objective.spaces.items():
                 features = space.extractor(reconstruction)
-                if isinstance(space.statistics, OfficialFDStatistics):
-                    space.statistics.accumulate_initial(features)
-                elif isinstance(space.statistics, EMAStats):
-                    accumulators[name].update(features)
-                else:
-                    chunks[name].append(features.cpu())
+                space.statistics.accumulate_initial(features)
         for name, space in objective.spaces.items():
-            if isinstance(space.statistics, OfficialFDStatistics):
-                space.statistics.finalize_initialization()
-            elif isinstance(space.statistics, EMAStats):
-                space.statistics.initialize(accumulators[name].moments())
-            else:
-                space.statistics.initialize(torch.cat(chunks[name]).to(device))
+            space.statistics.finalize_initialization()
     finally:
         model.train(previous_mode)
 
@@ -86,7 +71,7 @@ def g_step(model, objective, optimizer, images, grad_clip):
         norms[name] = float(torch.stack([g.detach().float().norm().square() for g in gradients]).sum().sqrt())
     if any(p.grad is not None or p.requires_grad for s in objective.spaces.values() for p in s.extractor.parameters()):
         raise RuntimeError("Static feature extractor was accidentally trainable")
-    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip, error_if_nonfinite=True)
+    norm = checked_grad_norm(model.parameters(), grad_clip)
     optimizer.step()
     if any(not torch.isfinite(p).all() for p in model.parameters()):
         raise FloatingPointError("Optimizer produced non-finite parameters; statistics not committed")

@@ -1,8 +1,9 @@
-"""A baseline: call the unchanged FD-Loss core; adapt reconstruction I/O only.
+"""A/B static FD: call the unchanged upstream core; adapt reconstruction I/O.
 
 Initialization and forward dispatch follow upstream judges.fill_all_queues and
 main_fd.get_fd_train_step. Keep upstream dtypes, eigvalsh/sqrt derivatives and
 FP32 loss return; do not route A through our stabilized frechet.py implementation.
+The FD-Loss and AdvFD static cores are byte-identical (verified in tests).
 The wrapper adds lifecycle validation and a single post-optimizer commit. On
 successful steps this enqueues the same detached pre-update features as upstream.
 """
@@ -82,10 +83,10 @@ class OfficialStaticFD(StaticFD):
     def __init__(self, spaces, norm_eps=0.01):
         super().__init__(spaces, norm_eps)
         if norm_eps != 0.01:
-            raise ValueError("A retains the official recipe's normalization epsilon 0.01")
+            raise ValueError("Static FD retains the official recipe's normalization epsilon 0.01")
         for space in self.spaces.values():
             if not isinstance(space.statistics, OfficialFDStatistics):
-                raise TypeError("A must use the unchanged official statistics backend")
+                raise TypeError("Static FD must use the unchanged official statistics backend")
 
     def forward(self, reconstructions):
         total = torch.tensor(0.0, device=reconstructions.device)

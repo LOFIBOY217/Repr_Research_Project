@@ -1,5 +1,6 @@
 """Reconstruction adapter for the official AdvFD D-then-G implementation."""
 import torch
+from .gradients import checked_grad_norm
 
 
 def critic_step(objective, optimizer, real, reconstruction, step):
@@ -69,7 +70,7 @@ def adversarial_g_step(model, objective, optimizer, critic_optimizer, images, gr
         raise RuntimeError("Adversarial extractor not frozen/cleared for G-step")
     if any(p.requires_grad or p.grad is not None for s in objective.spaces.values() for p in s.extractor.parameters()):
         raise RuntimeError("Static extractor changed gradient scope")
-    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip, error_if_nonfinite=True)
+    norm = checked_grad_norm(model.parameters(), grad_clip)
     optimizer.step()
     if any(not torch.isfinite(p).all() for p in model.parameters()):
         raise FloatingPointError("Non-finite reconstruction parameters")

@@ -11,8 +11,9 @@ from recon_fd.engine.adversarial import adversarial_g_step, critic_step
 from recon_fd.engine.checkpoint import read_checkpoint
 from recon_fd.objectives.adaptive_fd import AdvFD, AdvStatsEMA
 from recon_fd.objectives.whitening import real_whitened_frechet_distance
-from recon_fd.objectives.static_fd import StaticSpace, StaticFD
-from recon_fd.objectives.statistics import RunningMoments, EMAStats
+from recon_fd.objectives.static_fd import StaticSpace
+from recon_fd.objectives.official_fd import OfficialStaticFD, OfficialFDStatistics, precompute_sigma_ref_sqrt
+from recon_fd.objectives.statistics import RunningMoments
 from recon_fd.representations.lora import LoRAQKVLinear, apply_qkv_lora
 
 
@@ -84,7 +85,7 @@ def test_full_iteration_matches_upstream_loss_and_update_rules(project, small_sy
     reference_fake = official.FeatureStatsEMA(6, config["ema_beta"])
     space = reference_static.spaces["tiny"]
     reference_real.initialize_from_mean_cov(space.reference_mean, space.reference_cov)
-    reference_fake.initialize_from_mean_m2(space.statistics.mean, space.statistics.second)
+    reference_fake.initialize_from_mean_m2(space.statistics.queue.mu_ema, space.statistics.queue.m2_ema)
     g_opt = torch.optim.AdamW(model.parameters(), lr=0.0001, weight_decay=0)
     ref_g_opt = torch.optim.AdamW(reference_model.parameters(), lr=0.0001, weight_decay=0)
     d_opt = torch.optim.AdamW(objective.critic_parameters(), lr=config["lr"], betas=config["betas"], weight_decay=0)
@@ -111,13 +112,13 @@ def test_full_iteration_matches_upstream_loss_and_update_rules(project, small_sy
     dynamic, real_update, fake_update = ref_dynamic(reconstruction)
     loss = main.loss + config["weight"] * dynamic / (dynamic.detach() + 0.01)
     loss.backward()
-    torch.nn.utils.clip_grad_norm_(reference_model.parameters(), 1)
+    # The official generator default is no clipping (critic still clips at 1).
     ref_g_opt.step()
     reference_static.commit(main)
     reference_real.update(real_update)
     reference_fake.update(fake_update)
 
-    metrics = adversarial_g_step(model, objective, g_opt, d_opt, images, 1, 1)
+    metrics = adversarial_g_step(model, objective, g_opt, d_opt, images, 0, 1)
     assert metrics["loss"] == pytest.approx(float(loss.detach()), abs=1e-7)
     assert metrics["critic_fd"] == pytest.approx(float(critic_value.detach()), abs=1e-7)
     for name, value in model.state_dict().items():
@@ -166,7 +167,7 @@ def test_activation_schedule_real_frequency_and_static_retention(project, small_
         if step == 2:
             # Activation copies the UPDATED static EMA, not its initial value.
             objective.initialize_fake_at_activation()
-            torch.testing.assert_close(objective.fake_statistics.second, static.spaces["tiny"].statistics.second)
+            torch.testing.assert_close(objective.fake_statistics.second, static.spaces["tiny"].statistics.queue.m2_ema)
         rows.append(adversarial_g_step(model, objective, g_opt, d_opt, images, 1, step))
         if step == 1:
             for name, value in initial_psi.items():
@@ -241,12 +242,13 @@ def test_actual_timm_lora_in_B_training_engine(project, tmp_path):
                                       "weights": str(weights), "target_size": 32, "pool": "cls"})
     images = torch.rand(8, 3, 16, 16)
     model = TinyReconstructor()
-    real, fake = RunningMoments(), RunningMoments()
+    real = RunningMoments()
     real.update(extractor(images))
-    fake.update(extractor(model(images)))
-    state = EMAStats(192, 0.999)
-    state.initialize(fake.moments())
-    static = StaticFD({"tiny": StaticSpace(extractor, real.moments(), state)})
+    state = OfficialFDStatistics(192, len(images), "ema", 0.999)
+    state.accumulate_initial(extractor(model(images)))
+    state.finalize_initialization()
+    static = OfficialStaticFD({"tiny": StaticSpace(extractor, real.moments(), state,
+                                                  root_function=precompute_sigma_ref_sqrt)})
     config = settings(project)
     config.update(start_step=0, warmup_steps=0, gradient_checkpointing=True)
     # Direct construction exercises adapter plumbing on a small random ViT;
@@ -290,11 +292,14 @@ def test_full_scope_keeps_bn_buffers_but_trains_affine(project):
     images = torch.rand(12, 3, 8, 8)
     accumulator = RunningMoments()
     accumulator.update(extractor(images))
-    state = EMAStats(6, 0.999)
-    state.initialize(accumulator.moments())
+    state = OfficialFDStatistics(6, len(images), "ema", 0.999)
+    state.accumulate_initial(extractor(images))
+    state.finalize_initialization()
     config = settings(project)
     config["start_step"] = 0
-    objective = AdvFD(StaticFD({"tiny": StaticSpace(extractor, accumulator.moments(), state)}), config)
+    static = OfficialStaticFD({"tiny": StaticSpace(extractor, accumulator.moments(), state,
+                                                  root_function=precompute_sigma_ref_sqrt)})
+    objective = AdvFD(static, config)
     objective.initialize_fake_at_activation()
     before = deepcopy(objective.extractor.state_dict())
     assert set(objective.trainable_names) == set(dict(objective.extractor.named_parameters()))

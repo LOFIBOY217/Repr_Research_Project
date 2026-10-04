@@ -45,7 +45,9 @@ train:
   lr: 0.000001
   weight_decay: 0.0
   betas: [0.9, 0.95]
-  grad_clip: 1.0
+  # Official FD-Loss and AdvFD generator default: no gradient clipping.
+  # B's separate critic clipping remains 1.0.
+  grad_clip: 0.0
   grad_accumulation: 1
   save_every: 1000
   log_every: 10

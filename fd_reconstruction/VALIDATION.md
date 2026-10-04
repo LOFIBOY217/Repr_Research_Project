@@ -4,7 +4,7 @@
 
 ## 自动测试
 
-在 `fd_reconstruction` 下执行 `.venv/bin/python -m pytest -q`，A 切换到官方计算核心后的结果为 **52 passed**。原有 B 测试全部保留；A 的训练、恢复和端到端测试已接入官方后端。
+在 `fd_reconstruction` 下执行 `.venv/bin/python -m pytest -q`，A/B 官方核心对齐后的结果为 **59 passed**。两组训练、恢复和端到端测试均已接入官方静态后端；B 动态统计与 whitening 直接调用官方原码。
 
 A 官方后端新增检查：
 
@@ -19,7 +19,7 @@ A 官方后端新增检查：
 - 与固定版本官方 FD-Loss 的普通情况下 FD 数值、梯度、EMA 统计和队列替换对照。
 - G-step 确实更新 encoder 和 decoder，固定特征提取器保持不变。
 - 重复 forward 不修改统计，重复 commit 被拒绝。
-- 旧稳定化 FD 的退化协方差与非有限输入检查继续保留，服务于独立评价及 B；A 训练核心使用官方行为，外层训练器检查非有限损失和梯度并停止。
+- 旧稳定化 FD 的退化协方差与非有限输入检查继续保留，服务于独立评价；A/B 训练核心使用官方行为，外层训练器检查非有限损失和梯度并停止。
 - 连续训练与经命令行保存、恢复后的最终模型和统计状态逐项一致。
 - 实际 AutoencoderKL 的小型随机检查点加载与反向传播。
 - 实际 Inception 架构的输入梯度；timm ViT 的本地权重加载、CLS/平均 pooling 和输入梯度。
@@ -29,6 +29,10 @@ A 官方后端新增检查：
 
 B 组新增覆盖：
 
+- A/B 共用静态文件与两份官方快照逐字节一致；同配置下静态 loss、输入梯度及提交状态严格相等。
+- 动态 `adversarial.py` 逐字节一致，LoRA 类源码原文一致，梯度范数辅助文件除末尾换行外一致；EMA 连续 12 步缓冲与梯度严格匹配原文件。
+- G 不裁剪时梯度不被缩放，非有限梯度被拒绝；D 仍裁剪为 1。默认 start 1000、warmup 4000、D frequency 2 的端点有显式检查。
+- 执行事件验证每轮只重建一次、D→G→统计提交；跳过 D 的轮次只有 G→统计提交。这验证官方代码顺序，不冒充论文 Algorithm 1 的 G→D。
 - Whitening 的数值、fake 梯度和 real detach 与官方函数对齐，包括低秩协方差。
 - 动态真实初始化直接复制参考协方差，EMA 前向、梯度与更新和官方 `FeatureStatsEMA` 对照。
 - 使用上游 whitening/EMA 函数手工构造一轮 D/G 更新，与新训练器的损失和参数更新逐项对照。
@@ -41,6 +45,8 @@ B 组新增覆盖：
 
 ## 可检查的运行输出
 
+当前版本的 `runs/verified_alignment_A_20261004/` 和 `runs/verified_alignment_B_20261004/` 均已通过独立 CLI：训练 3 步，恢复到 6 步，导出并评价 32 张合成重建。两组静态统计提交都是 6 次；B 有 2 次 D 更新及真实/重建各 4 次动态 EMA 提交。实现指纹为 `885faf0cf8858f8bf376940a15d1c8b95505cd1b13c67ad554cddc606e58e287`。这两个 smoke 的 EMA/lr 配置不同，仅分别验证链路，不用于 A/B 效果比较；静态算法等价性由相同配置的独立测试确认。
+
 `runs/verified_fd_only_official_20261004/` 是 A 官方后端替换后的新 CLI 运行：训练 3 步、从 checkpoint 恢复到 6 步，然后独立评价第 6 步的 32 张合成图片。6 步均有 encoder/decoder 梯度、静态统计提交计数依次为 1 至 6；独立导图清单与评价都完成。实现指纹为 `4c7f67b982fc0ee2ce46570929ae15f65ab0b2674962b8606daabbb4c703a8b8`。这些小模型结果仅证明接口可执行，不证明 ImageNet 50k 稳定性或 FD hacking。
 
 `runs/verified_fd_only/` 保留了 A 阶段代码版本的工程运行：先训练 3 步，恢复到 6 步，再分别评价第 0 步和第 6 步。B 开发改变了实现指纹，这批旧 checkpoint 不声称能在新代码下精确续训。
@@ -50,7 +56,7 @@ B 组新增覆盖：
 - `evaluation_step0/` 与 `evaluation_step6/`：各 32 张合成输入的重建、完整性清单、两个小型固定评价器 FD、PSNR、SSIM 和逐图残差指标。
 - `diagnostic.json`：两个固定评价器的变化比较，明确标记 `engineering_only: true`。
 
-`runs/verified_advfd_B/` 保留了此前 B 版本的独立 CLI 运行：训练 3 步、恢复到 6 步、评价第 0/6 步、运行原有分歧筛选。使用合成图片和小型随机网络，各检查点评价 32 张图。此次 A 后端修改改变了全包实现指纹；旧 B checkpoint 同样不能在当前版本下精确续训，尽管 B 的计算路径没有改变。
+`runs/verified_advfd_B/` 保留了此前 B 版本的独立 CLI 运行：训练 3 步、恢复到 6 步、评价第 0/6 步、运行原有分歧筛选。使用合成图片和小型随机网络，各检查点评价 32 张图。此次 A/B 后端对齐改变了统计键及全包实现指纹；旧 checkpoint 不能在当前版本下精确续训。
 
 - `train.jsonl` 有 6 个 G 步，前两步只有静态训练，累计 2 次 D 更新、4 次动态真实/重建 EMA 提交、6 次静态 EMA 提交。
 - `advfd_parameters.json` 保存本次小模型动态参数集合；checkpoint 包含两个优化器。
@@ -58,12 +64,12 @@ B 组新增覆盖：
 
 这些文件属于忽略的运行产物，不随源代码提交。较早的 `runs/smoke/` 是开发中间版本，不作为当前代码的可恢复检查点；恢复操作会检查实现指纹。
 
-本次另通过 Python 编译、`pip check` 和 wheel 构建；在仓库外直接从 wheel 导入官方核心及 A 适配器成功，不依赖 `third_party` 运行时目录。三个单卡作业脚本的 Bash 语法检查此前通过，本次未改这些脚本。完整本地依赖版本记录在 `validation/environment-macos.txt`，不应直接当作 nibi CUDA 安装方案。
+本次另通过 Python 编译、`pip check` 和 wheel 构建；在仓库外直接从 wheel 导入 A/B 官方核心及 B 适配器成功，不依赖 `third_party` 运行时目录。三个单卡作业脚本的 Bash 语法检查此前通过，本次未改这些脚本。完整本地依赖版本记录在 `validation/environment-macos.txt`，不应直接当作 nibi CUDA 安装方案。
 
 ## 尚未验证
 
 尚未运行真实预训练 tokenizer 的完整 ImageNet 后训练、50k 正式评价、预训练大表征或 LPIPS 权重的完整集成流程，也未验证 CUDA 峰值显存、吞吐与集群环境。单元测试不证明大模型长训练稳定，更不证明已经发现或避免 FD hacking。
 
-此前 A 的 nibi smoke 作业编号为 23218660；提交时 GPU 节点不可用，尚无运行结果记录。本次没有重新查询它的实时状态，也未将 B 代码覆盖到它使用的远端目录。B 下一项工程验证应在独立版本目录的单张 GPU 上，以真实 tokenizer、Inception 和真实图片做短训练及恢复测试，再执行固定 50k 正式评价。MAE/SigLIP 大型预训练 LoRA 尚未跑通 GPU 集成；候选方法 C 仍未实现。
+此前 A 的 nibi smoke 作业编号为 23218660；2026 年 10 月 4 日本次检查仍为 PENDING，工作目录是旧 checkout。没有覆盖该目录、取消或重提交作业。新 GitHub checkout `Repr_Research_Project_fd_reconstruction` 在同步前检查为干净，且没有排队/运行作业使用它。B 下一项工程验证应在这个独立版本目录的单张 GPU 上，以真实 tokenizer、Inception 和真实图片做短训练及恢复测试，再执行固定 50k 正式评价。MAE/SigLIP 大型预训练 LoRA 尚未跑通 GPU 集成；候选方法 C 仍未实现。
 
-此次 A 官方后端同样没有同步到 nibi，没有提交或变更远端作业。正式 A/B 因果比较前，还需要核对 B 静态计算中的旧适配差异，不能将其视为与新 A 完全逐位一致。
+A/B 静态核心差异已修正，但论文与代码的执行顺序冲突、原训练预算、精度、预处理及参考/评价数据范围仍未全部对齐，见 `ADVFD_BASELINE.md`。测试通过不能替代这些研究协议决策，也不能作为完整论文复现的声明。

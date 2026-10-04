@@ -16,6 +16,8 @@ def test_vendor_is_byte_identical(project, filename):
     original = project / "third_party/FD-Loss/frechet_distance" / filename
     packaged = project / "src/recon_fd/vendor/fd_loss" / filename
     assert original.read_bytes() == packaged.read_bytes()
+    advfd_original = project / "third_party/AdvFD/frechet_distance" / filename
+    assert advfd_original.read_bytes() == packaged.read_bytes()
 
 
 def original_modules(project):

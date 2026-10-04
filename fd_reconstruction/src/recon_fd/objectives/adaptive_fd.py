@@ -3,48 +3,53 @@ from copy import deepcopy
 from dataclasses import dataclass
 import torch
 from torch import nn
-from .statistics import EMAStats, Moments, check_features
+from .statistics import Moments, check_features
+from .official_fd import OfficialFDStatistics, OfficialStaticFD
+from recon_fd.vendor.advfd.adversarial import FeatureStatsEMA
 from .whitening import real_whitened_frechet_distance
 from recon_fd.representations.lora import apply_qkv_lora
 
 
-class AdvStatsEMA(EMAStats):
-    """Upstream FeatureStatsEMA initialization, with explicit versioned commit.
+class AdvStatsEMA(FeatureStatsEMA):
+    """Unmodified upstream statistics operations plus a versioned lifecycle."""
+    def __init__(self, dimension, beta):
+        super().__init__(dimension, beta)
+        self.register_buffer("updates", torch.tensor(0, dtype=torch.long))
 
-    Real reference covariance is copied literally, with NO ddof rescaling.
-    The baseline FD-only EMA's sample-based initialization is intentionally not
-    used here: AdvFD initialize_from_mean_cov has different semantics.
-    """
+    @property
+    def mean(self):
+        return self.mu_ema
+
+    @property
+    def second(self):
+        return self.m2_ema
+
     @torch.no_grad()
     def initialize_mean_m2(self, mean, second):
-        self.mean.copy_(mean.detach().double())
-        self.second.copy_(second.detach().double())
-        self.initialized.fill_(True)
+        self.initialize_from_mean_m2(mean, second)
         self.updates.zero_()
 
     @torch.no_grad()
     def initialize_mean_cov(self, mean, covariance):
-        self.initialize_mean_m2(mean, covariance + torch.outer(mean, mean))
+        self.initialize_from_mean_cov(mean, covariance)
+        self.updates.zero_()
 
     def current(self):
-        if not self.initialized:
-            raise RuntimeError("AdvFD EMA not initialized")
-        mean = self.mean.detach().clone()
-        cov = self.second.detach().clone() - torch.outer(mean, mean)
-        return Moments(mean, 0.5 * (cov + cov.T), 0)
+        mean, cov = self.current_stats()
+        return Moments(mean, cov, 0)
 
     def preview(self, features):
-        if self.initialized:
-            return super().preview(features)
         check_features(features)
-        x = features.double()
-        mean = x.mean(0)
-        return Moments(mean, x.T @ x / len(x) - torch.outer(mean, mean), len(x))
+        mean, cov = self.build_stats(features)
+        return Moments(mean, cov, len(features))
 
     @torch.no_grad()
     def commit(self, features, expected_version):
-        super().commit(features, expected_version)
-        self.initialized.fill_(True)
+        if int(self.updates) != expected_version:
+            raise RuntimeError("Stale or duplicate AdvFD statistics commit")
+        check_features(features)
+        self.update(features)
+        self.updates.add_(1)
 
 
 @dataclass
@@ -59,6 +64,8 @@ class AdaptiveResult:
 class AdvFD(nn.Module):
     def __init__(self, static, config):
         super().__init__()
+        if not isinstance(static, OfficialStaticFD):
+            raise TypeError("B requires the unchanged official static FD core")
         self.static = static
         self.config = deepcopy(config)
         self.source_name = config["representation"]
@@ -129,10 +136,11 @@ class AdvFD(nn.Module):
     def initialize_fake_at_activation(self):
         if not self.fake_statistics.initialized:
             state = self.spaces[self.source_name].statistics
-            if not isinstance(state, EMAStats) or not state.initialized:
+            if (not isinstance(state, OfficialFDStatistics) or not state.initialized
+                    or not state.queue.ema_stats):
                 raise RuntimeError("AdvFD requires initialized matching static EMA")
             # Upstream copies the current static fake moments AT adv start.
-            self.fake_statistics.initialize_mean_m2(state.mean, state.second)
+            self.fake_statistics.initialize_mean_m2(state.queue.mu_ema, state.queue.m2_ema)
 
     def dynamic(self, real_images, fake_images, step):
         if not self.fake_statistics.initialized:
