@@ -1,0 +1,35 @@
+# C: current-psi real pool, no static FD, full dynamic feature extractor.
+# Shared reconstruction budget is NOT a reproduction of the paper's budget.
+extends: base.yaml
+method: ours
+static:
+  enabled: false
+  representations: []
+adaptive:
+  enabled: true
+  trainable_scope: full
+  representation: {name: inception, kind: inception, weights: '', pool: cls}
+  weight: 0.1
+  norm_eps: 0.01
+  ema_beta: 0.99
+  whiten_eps: 0.001
+  lr: 0.000001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0
+  grad_clip: 1.0
+  # No static-only phase: initialize statistics, then train immediately.
+  start_step: 0
+  warmup_steps: 0
+  update_freq: 2
+  steps_per_update: 1
+  gradient_checkpointing: false
+  initialization_samples: 50000
+  initialization_batch_size: 16
+  real_stats:
+    mode: reencode_pool
+    samples: 50000
+    batch_size: 16
+    seed: 217
+  lora: {rank: 16, alpha: 16.0, targets: [attn.qkv], dropout: 0.0}
+train:
+  output: runs/ours_inception

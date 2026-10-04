@@ -16,7 +16,7 @@ def test_config_modes_and_50k_guard(project):
     with pytest.raises(ValueError, match="50,000"):
         validate(config)
     config = load_config(project / "configs/smoke.yaml", ["method=ours", "adaptive.enabled=true"])
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ValueError):  # A config cannot silently become C by changing only its name.
         validate(config)
     with pytest.raises(ValueError, match="Unknown override"):
         load_config(project / "configs/smoke.yaml", ["train.typo=5"])

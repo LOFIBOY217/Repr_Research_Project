@@ -2,7 +2,7 @@
 
 独立于旧生成 pilot 的重建后训练项目，遵循 [已确定的架构设计](../fd_hacking_stage1/RECONSTRUCTION_CODE_ARCHITECTURE.md)。目标是比较 FD-only、AdvFD 和候选方法的 hacking 行为，而非追求重建排名。
 
-当前实现 A：FD-only，以及 B：AdvFD-Reconstruction。两者都是原图 → 可训练 encoder → latent → 可训练 decoder → 重建图；B 保留静态 FD，并添加原方法的动态对抗 FD。没有像素、感知或 GAN 训练损失。候选方法 C 尚未接通；选择它会明确报错，绝不退回基线冒充新方法。
+当前实现 A：FD-only，B：AdvFD-Reconstruction，以及 C：无 static、动态提取器全参数训练、真实参考按当前 ψ 重编码。三组都是原图 → 可训练 encoder → latent → 可训练 decoder → 重建图；B 保留静态 FD 和原动态分支，C 不混入 A/B。没有像素、感知或 GAN 训练损失。C 的实现、消融和验证边界见 [C 组说明](CANDIDATE_METHOD.md)。
 
 ## 已实现的范围
 
@@ -68,7 +68,7 @@ A 的 FD 计算以官方代码为准，不自行改造估计器或特征值梯�
 
 训练集从 `train/` 读取，评价集从 `val/` 读取；若实际名称为 `validation/`，显式覆盖 `data.val_path`。当前统一使用 Grounded/ADM 的中心裁剪，暂不引入随机增强，确保参考统计、输入和各基线匹配。训练真实参考从完整训练集固定随机抽取 50k，避免按类别目录取前 50k 导致偏样本；重建统计也先用 50k 初始化。初始化可能较慢，不发生参数更新。
 
-FD-only 的表征与真实参考均固定，保持原基线。第三项研究设计仅针对未来候选方法 C：真实参考统计必须跟随当前特征提取器更新；EMA 是待验证的估计方式，而不是必须采用的机制。拟比较当前 batch 统计、用当前参数重编码固定真实图片池，以及 EMA。固定图片池不等于固定特征统计，不能把这项估计器消融提前加进 A 或 B 以改变基线。
+FD-only 的表征与真实参考均固定，保持原基线。第三项研究设计仅针对 C：真实参考统计必须跟随当前特征提取器更新；EMA 是待验证的估计方式，而不是必须采用的机制。C 已接通按当前参数重编码固定真实图片池，以及单独标记的 EMA/固定初值对照；当前 batch 直接估计尚未实现。固定图片池不等于固定特征统计，不把这些估计器消融加进 A 或 B 改变基线。
 
 ## B 组 AdvFD 重建基线
 
@@ -103,9 +103,9 @@ FD-only 的表征与真实参考均固定，保持原基线。第三项研究设
 
 `src/recon_fd/` 分为 `tokenizers`、`representations`、`objectives`、`engine`、`evaluation`、`diagnostics`，与架构设计一致；`vendor/fd_loss` 和 `vendor/advfd` 隔离官方计算核心。静态和动态统计前向均不修改缓存，`commit()` 带版本检查；重复提交会失败。
 
-三项设计的配置位置为 `static.enabled`、`adaptive.trainable_scope`、`adaptive.real_stats.mode`。A 和 B 已可执行；B 强制保留 static、论文参数范围和真实侧 EMA，避免混入 C 的消融。候选方法 C 尚未实现。
+三项设计的配置位置为 `static.enabled`、`adaptive.trainable_scope`、`adaptive.real_stats.mode`。A、B、C 均有独立执行路径；B 强制保留 static、论文参数范围和真实侧 EMA，避免混入 C 的消融。
 
-A 配置中未启用的 `adaptive.real_stats.mode: ema` 是预留值；B 中它表示明确保留 AdvFD 原机制，都不决定 C 的最终估计器。当前参数重算与 EMA 的切换仍未实现。
+A 配置中未启用的 `adaptive.real_stats.mode: ema` 是预留值；B 中它表示保留 AdvFD 原机制，都不决定 C 的最终估计器。C 主配置使用 `reencode_pool`，`ours_real_ema` 是明确标记的估计器对照，不将历史混合估计冒充当前 ψ 的重编码统计。
 
 输出在 `runs/`，参考统计在 `cache/`，均不提交 Git。断点恢复可增加 `train.steps` 或改变日志间隔，不能更换训练数据、目标统计、学习率或实现代码。若回到较早检查点而原目录已有更晚日志，应改用新输出目录，防止混合轨迹。普通梯度累积不等于大 batch FD，所以首版明确只允许 `grad_accumulation=1`。
 

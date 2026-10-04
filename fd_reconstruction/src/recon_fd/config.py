@@ -4,6 +4,8 @@ from pathlib import Path
 import yaml
 from .provenance import fingerprint
 
+CANDIDATE_METHODS = {"ours", "ours_add_static", "ours_lora", "ours_real_ema", "ours_fixed_reference"}
+
 
 def merge(base, update):
     result = copy.deepcopy(base)
@@ -55,19 +57,23 @@ def validate(config):
         "train": {"output", "steps", "batch_size", "lr", "weight_decay", "betas", "grad_clip", "grad_accumulation", "save_every", "log_every"},
         "evaluation": {"num_samples", "batch_size", "engineering_only", "paired_metrics", "representations"},
     }
-    if config["method"] == "advfd_reconstruction":
+    if config["method"] == "advfd_reconstruction" or config["method"] in CANDIDATE_METHODS:
         allowed["adaptive"] |= {"representation", "weight", "ema_beta", "whiten_eps", "lr", "betas",
                                 "weight_decay", "grad_clip", "start_step", "warmup_steps", "update_freq",
                                 "steps_per_update", "lora", "gradient_checkpointing"}
+    if config["method"] in CANDIDATE_METHODS:
+        allowed["adaptive"] |= {"norm_eps", "initialization_samples", "initialization_batch_size"}
     for section, keys in allowed.items():
         if set(config[section]) != keys:
             raise ValueError(f"Unknown or missing keys in {section}: {set(config[section]) ^ keys}")
-    if config["method"] not in {"fd_only", "advfd_reconstruction"}:
-        raise NotImplementedError("Only fd_only and advfd_reconstruction are implemented; ours is not")
-    if config["adaptive"]["enabled"] != (config["method"] == "advfd_reconstruction"):
+    if config["method"] not in {"fd_only", "advfd_reconstruction"} | CANDIDATE_METHODS:
+        raise NotImplementedError("Unsupported reconstruction method")
+    if config["adaptive"]["enabled"] != (config["method"] != "fd_only"):
         raise ValueError("Method and adaptive.enabled disagree")
-    if not config["static"]["enabled"] or config["tokenizer"]["trainable_scope"] != "encoder_decoder":
-        raise ValueError("Both baselines require static FD and joint encoder+decoder training")
+    if config["tokenizer"]["trainable_scope"] != "encoder_decoder":
+        raise ValueError("All methods require joint encoder+decoder training")
+    if config["method"] not in CANDIDATE_METHODS and not config["static"]["enabled"]:
+        raise ValueError("Both baselines require static FD")
     if config["static"]["statistics"] not in {"ema", "queue", "queue_online"}:
         raise ValueError("static.statistics must be ema, queue or queue_online")
     if not 0 <= config["static"]["ema_beta"] < 1 or config["static"]["norm_eps"] <= 0:
@@ -90,7 +96,8 @@ def validate(config):
         for section in ("static", "evaluation"):
             reps = config[section][field]
             names = [r["name"] for r in reps]
-            if not reps or len(names) != len(set(names)):
+            if ((not reps and (section == "evaluation" or config["static"]["enabled"]))
+                    or len(names) != len(set(names))):
                 raise ValueError("Representation names must be nonempty and unique")
             for spec in reps:
                 if set(spec) - {"name", "kind", "weights", "pool", "weight", "seed", "model_name", "target_size"}:
@@ -103,7 +110,7 @@ def validate(config):
                     raise ValueError("FD weights must be positive")
                 if spec["kind"] == "inception" and (spec.get("pool", "cls") != "cls" or spec.get("target_size", 299) != 299):
                     raise ValueError("Official Inception uses pool_2048 with internal TF resize to 299")
-    if config["method"] in {"fd_only", "advfd_reconstruction"}:
+    if config["static"]["enabled"]:
         if config["static"]["initialization_samples"] != config["static"]["queue_size"]:
             raise ValueError("Official static FD: initialization_samples must equal queue_size")
         if config["static"]["norm_eps"] != 0.01:
@@ -128,6 +135,70 @@ def validate(config):
         raise ValueError("This version is explicitly single-process, single-GPU")
     if config["method"] == "advfd_reconstruction":
         validate_advfd(config)
+    elif config["method"] in CANDIDATE_METHODS:
+        validate_candidate(config)
+
+
+def validate_candidate(config):
+    method, adaptive = config["method"], config["adaptive"]
+    if config["static"]["enabled"] != (method == "ours_add_static"):
+        raise ValueError("Only the explicitly labelled ours_add_static ablation enables static FD")
+    if not config["static"]["enabled"] and config["static"]["representations"]:
+        raise ValueError("C must have no hidden static representations")
+    scope = "lora" if method == "ours_lora" else "full"
+    if adaptive["trainable_scope"] != scope:
+        raise ValueError(f"{method} requires {scope} scope")
+    mode = {"ours_real_ema": "ema", "ours_fixed_reference": "frozen_initial"}.get(method, "reencode_pool")
+    real = adaptive["real_stats"]
+    if set(real) != {"mode", "samples", "batch_size", "seed"} or real["mode"] != mode:
+        raise ValueError(f"{method} requires real_stats mode {mode} and an explicit image-pool configuration")
+    for key in ("samples", "batch_size"):
+        if not isinstance(real[key], int) or real[key] < (2 if key == "samples" else 1):
+            raise ValueError(f"Invalid real_stats.{key}")
+    if not isinstance(real["seed"], int) or real["seed"] < 0:
+        raise ValueError("Invalid real pool seed")
+    for key in ("initialization_samples", "initialization_batch_size", "update_freq", "steps_per_update"):
+        if not isinstance(adaptive[key], int) or adaptive[key] < (2 if key == "initialization_samples" else 1):
+            raise ValueError(f"Invalid adaptive.{key}")
+    if adaptive["start_step"] != 0 or adaptive["warmup_steps"] != 0:
+        raise ValueError("C starts after statistics initialization with nonzero loss; no static-only warmup")
+    for key in ("lr", "weight", "whiten_eps", "grad_clip"):
+        if not isinstance(adaptive[key], (int, float)) or not 0 < adaptive[key] < float("inf"):
+            raise ValueError(f"Invalid adaptive.{key}")
+    if (adaptive["norm_eps"] != 0.01 or not 0 < adaptive["ema_beta"] < 1
+            or not 0 <= adaptive["weight_decay"] < float("inf")):
+        raise ValueError("Invalid candidate normalization/EMA/weight decay")
+    if len(adaptive["betas"]) != 2 or any(not 0 <= b < 1 for b in adaptive["betas"]):
+        raise ValueError("Invalid candidate optimizer betas")
+    spec = adaptive["representation"]
+    if not isinstance(spec, dict) or not {"name", "kind"} <= set(spec):
+        raise ValueError("C needs an independent representation specification, not a static-branch name")
+    if set(spec) - {"name", "kind", "weights", "pool", "weight", "seed", "model_name", "target_size"}:
+        raise ValueError("Unknown candidate representation keys")
+    if not isinstance(spec["name"], str) or not spec["name"].replace("_", "").isalnum():
+        raise ValueError("Candidate representation name must be alphanumeric/underscore")
+    if spec["kind"] == "timm" and not spec.get("model_name"):
+        raise ValueError("Candidate timm representation requires model_name")
+    if spec["kind"] not in {"inception", "timm", "tiny"} or spec.get("pool", "cls") not in {"cls", "avg"}:
+        raise ValueError("Unsupported candidate representation")
+    if spec["kind"] == "inception" and (spec.get("pool", "cls") != "cls" or spec.get("target_size", 299) != 299):
+        raise ValueError("Candidate Inception retains the official pool_2048/299 convention")
+    if adaptive["gradient_checkpointing"] and spec["kind"] != "timm":
+        raise ValueError("Candidate representation checkpointing currently supports timm only")
+    lora = adaptive["lora"]
+    if (set(lora) != {"rank", "alpha", "targets", "dropout"} or lora["rank"] != 16
+            or lora["alpha"] != 16 or lora["targets"] != ["attn.qkv"] or lora["dropout"] != 0):
+        raise ValueError("LoRA ablation retains B's rank-16 QKV configuration")
+    if scope == "lora" and spec["kind"] != "timm":
+        raise ValueError("LoRA ablation requires the same timm backbone as the full-tuning comparison")
+    if not config["evaluation"]["engineering_only"]:
+        if real["samples"] < 50000 or adaptive["initialization_samples"] < 50000:
+            raise ValueError("Formal C runs require 50,000 reference and initialization images")
+        if spec["kind"] == "tiny":
+            raise ValueError("Tiny candidate representation is engineering-only")
+        if spec["kind"] == "timm" and spec.get("model_name") not in {
+                "vit_large_patch16_224.mae", "vit_so400m_patch16_siglip_256.v2_webli"}:
+            raise ValueError("First C release supports the matched MAE/SigLIP scientific backbones")
 
 
 def validate_advfd(config):

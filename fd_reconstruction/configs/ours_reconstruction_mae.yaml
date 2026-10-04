@@ -1,0 +1,7 @@
+extends: ours_reconstruction.yaml
+adaptive:
+  representation: {name: mae, kind: timm, model_name: vit_large_patch16_224.mae, target_size: 224, pool: cls}
+  lr: 0.00002
+  gradient_checkpointing: true
+train:
+  output: runs/ours_mae_full

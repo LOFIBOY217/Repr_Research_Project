@@ -1,0 +1,7 @@
+extends: ours_reconstruction.yaml
+method: ours_fixed_reference
+adaptive:
+  real_stats:
+    mode: frozen_initial
+train:
+  output: runs/ours_fixed_reference

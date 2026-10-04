@@ -1,10 +1,10 @@
-# FD-only 与 AdvFD 重建基线验证记录
+# FD 重建三组方法验证记录
 
 验证日期：2026 年 10 月 4 日。环境为 macOS ARM64、Python 3.13.5、CPU；没有 CUDA。所有小模型结果只用于工程验证，不是 ImageNet 实验结果。
 
 ## 自动测试
 
-在 `fd_reconstruction` 下执行 `.venv/bin/python -m pytest -q`，A/B 官方核心对齐后的结果为 **59 passed**。两组训练、恢复和端到端测试均已接入官方静态后端；B 动态统计与 whitening 直接调用官方原码。
+在 `fd_reconstruction` 下执行 `.venv/bin/python -m pytest -q`，新增 C 后的结果为 **73 passed**，包含此前 A/B 的 59 项回归测试。A/B 两组训练、恢复和端到端测试均已接入官方静态后端；B 动态统计与 whitening 直接调用官方原码，C 复用这些动态计算核心但有独立的目标与状态管理。
 
 A 官方后端新增检查：
 
@@ -45,6 +45,10 @@ B 组新增覆盖：
 
 ## 可检查的运行输出
 
+C 新增 14 项检查：无静态构造/初始化依赖、真实参考与当前参数直接重编码一致、同版本缓存复用和过期版本拒绝、1/2 次 D 的执行顺序与梯度隔离、重复提交拒绝、直接调用官方动态 FD 的更新对照、主方法/真实 EMA/固定参考三种配置的精确 CPU 恢复和独立评价、配置与 50k 限制、真实 timm ViT 全参数/LoRA（含 checkpointing）、加回静态项的冻结保护，以及随机小型 AutoencoderKL 的 E+D 联合训练。未改动 A/B 官方数值文件或原训练步骤。
+
+`runs/verified_C_release_20261004/` 是 C 当前版本的独立 CLI 运行：训练 2 步、恢复到 4 步，再评价 32 张合成重建。共 2 次 D 更新、4 次重建 EMA 提交、3 次真实池编码（初始化及两个新 ψ 版本）；每步真实特征版本都与 loss 的 ψ 版本一致，静态项为空。实现指纹为 `4ee68512645367288478708a591ea8e3b0304b571950512aac6eb3116362b7d3`。编译、作业 Bash 语法、依赖检查和 wheel 打包均通过，仓库外可从 wheel 导入 C，不依赖第三方源码目录。这些产物不提交 Git，早期 C 开发检查点不用于当前版本精确恢复。
+
 当前版本的 `runs/verified_alignment_A_20261004/` 和 `runs/verified_alignment_B_20261004/` 均已通过独立 CLI：训练 3 步，恢复到 6 步，导出并评价 32 张合成重建。两组静态统计提交都是 6 次；B 有 2 次 D 更新及真实/重建各 4 次动态 EMA 提交。实现指纹为 `885faf0cf8858f8bf376940a15d1c8b95505cd1b13c67ad554cddc606e58e287`。这两个 smoke 的 EMA/lr 配置不同，仅分别验证链路，不用于 A/B 效果比较；静态算法等价性由相同配置的独立测试确认。
 
 `runs/verified_fd_only_official_20261004/` 是 A 官方后端替换后的新 CLI 运行：训练 3 步、从 checkpoint 恢复到 6 步，然后独立评价第 6 步的 32 张合成图片。6 步均有 encoder/decoder 梯度、静态统计提交计数依次为 1 至 6；独立导图清单与评价都完成。实现指纹为 `4c7f67b982fc0ee2ce46570929ae15f65ab0b2674962b8606daabbb4c703a8b8`。这些小模型结果仅证明接口可执行，不证明 ImageNet 50k 稳定性或 FD hacking。
@@ -70,6 +74,8 @@ B 组新增覆盖：
 
 尚未运行真实预训练 tokenizer 的完整 ImageNet 后训练、50k 正式评价、预训练大表征或 LPIPS 权重的完整集成流程，也未验证 CUDA 峰值显存、吞吐与集群环境。单元测试不证明大模型长训练稳定，更不证明已经发现或避免 FD hacking。
 
-此前 A 的 nibi smoke 作业编号为 23218660；2026 年 10 月 4 日本次检查仍为 PENDING，工作目录是旧 checkout。没有覆盖该目录、取消或重提交作业。新 GitHub checkout `Repr_Research_Project_fd_reconstruction` 在同步前检查为干净，且没有排队/运行作业使用它。B 下一项工程验证应在这个独立版本目录的单张 GPU 上，以真实 tokenizer、Inception 和真实图片做短训练及恢复测试，再执行固定 50k 正式评价。MAE/SigLIP 大型预训练 LoRA 尚未跑通 GPU 集成；候选方法 C 仍未实现。
+此前 A 的 nibi smoke 作业编号为 23218660；2026 年 10 月 4 日检查仍为 PENDING，工作目录是旧 checkout。没有覆盖该目录、取消或重提交作业。新 GitHub checkout `Repr_Research_Project_fd_reconstruction` 在 C 同步前检查为干净且无依赖它的作业。C 已完成本地工程实现，GPU 短测入口为 `jobs/ours_smoke_nibi.sbatch`；提交后必须以实际日志和 `result.json` 为验证依据。MAE/SigLIP 大型预训练 LoRA/full 尚未跑通 GPU 集成。
+
+本次集群检查显示 H100、A100、MIG 和其他 GPU 节点处于 down、drained 或 inval，属于外部调度限制。短测使用真实预训练 SD-VAE/Inception、128 张训练参考和各 32 张评价图，只验证实现、参考重算与恢复，不作为 50k FD 稳定性或视觉 hacking 证据。排队或成功 pull 不能写成 CUDA 测试通过。
 
 A/B 静态核心差异已修正；执行顺序已由用户确认跟随官方代码 D→G，现有时序回归测试与该决定一致。原训练预算、精度、预处理及参考/评价数据范围仍未全部对齐，见 `ADVFD_BASELINE.md`。测试通过不能替代其余研究协议决策，也不能作为完整论文复现的声明。

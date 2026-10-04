@@ -2,20 +2,32 @@ import json
 from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
-from recon_fd.config import training_signature
+from recon_fd.config import training_signature, CANDIDATE_METHODS
 from recon_fd.data import ResumableBatchSampler, sequential_loader, selected_dataset
 from recon_fd.evaluation.reference import get_reference
 from recon_fd.objectives.static_fd import StaticSpace
 from recon_fd.objectives.official_fd import OfficialFDStatistics, OfficialStaticFD, precompute_sigma_ref_sqrt
 from recon_fd.objectives.adaptive_fd import AdvFD
+from recon_fd.objectives.candidate_fd import CandidateFD
 from recon_fd.representations import build_representation
 from recon_fd.provenance import write_json, state_fingerprint
 from .checkpoint import save_checkpoint, restore_checkpoint
 from .adversarial import adversarial_g_step
 from .gradients import checked_grad_norm
+from .candidate import candidate_g_step
 
 
 def build_objective(config, dataset, device):
+    if config["method"] in CANDIDATE_METHODS:
+        static, identities = None, {}
+        if config["static"]["enabled"]:
+            from copy import deepcopy
+            baseline = deepcopy(config)
+            baseline["method"] = "fd_only"
+            static, identities = build_objective(baseline, dataset, device)
+        objective = CandidateFD(config, dataset, static).to(device)
+        identities["candidate_real_pool"] = objective.real_reference.pool.identity
+        return objective, identities
     static = config["static"]
     reference_data = selected_dataset(dataset, static["reference_samples"], config["data"]["seed"], True)
     spaces, identities = {}, {}
@@ -37,6 +49,11 @@ def build_objective(config, dataset, device):
 
 @torch.no_grad()
 def initialize_statistics(model, objective, dataset, config, device):
+    if isinstance(objective, CandidateFD):
+        if objective.static is not None:
+            initialize_statistics(model, objective.static, dataset, config, device)
+        objective.initialize(model, dataset, config["data"]["seed"], config["data"]["workers"])
+        return
     subset = selected_dataset(dataset, config["static"]["initialization_samples"], config["data"]["seed"] + 1, True)
     previous_mode = model.training
     model.eval()
@@ -96,11 +113,14 @@ def run_training(config, model, objective, dataset, reference_identities, device
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["train"]["lr"],
                                   betas=tuple(config["train"]["betas"]), weight_decay=config["train"]["weight_decay"])
     critic_optimizer = None
-    if isinstance(objective, AdvFD):
+    if isinstance(objective, (AdvFD, CandidateFD)):
         adaptive = config["adaptive"]
         critic_optimizer = torch.optim.AdamW(objective.critic_parameters(), lr=adaptive["lr"],
                                             betas=tuple(adaptive["betas"]), weight_decay=adaptive["weight_decay"])
         write_json(run / "advfd_parameters.json", objective.parameter_manifest())
+        if isinstance(objective, CandidateFD):
+            pool = objective.real_reference.pool
+            write_json(run / "real_reference_manifest.json", {"identity": pool.identity, "sample_ids": pool.ids})
     if resume_state is None:
         initialize_statistics(model, objective, dataset, config, device)
         start = 0
@@ -123,7 +143,10 @@ def run_training(config, model, objective, dataset, reference_identities, device
     try:
         for step, batch in enumerate(loader, start + 1):
             images = batch["image"].to(device)
-            if isinstance(objective, AdvFD):
+            if isinstance(objective, CandidateFD):
+                metrics = candidate_g_step(model, objective, optimizer, critic_optimizer, images,
+                                            config["train"]["grad_clip"], step - 1)
+            elif isinstance(objective, AdvFD):
                 metrics = adversarial_g_step(model, objective, optimizer, critic_optimizer, images,
                                              config["train"]["grad_clip"], step - 1)
             else:

@@ -1,0 +1,6 @@
+extends: ours_reconstruction_mae.yaml
+method: ours_lora
+adaptive:
+  trainable_scope: lora
+train:
+  output: runs/ours_mae_lora

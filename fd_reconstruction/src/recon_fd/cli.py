@@ -4,7 +4,7 @@ from pathlib import Path
 import random
 import numpy as np
 import torch
-from .config import load_config, validate, expand_path, training_signature
+from .config import load_config, validate, expand_path, training_signature, CANDIDATE_METHODS
 from .data import build_dataset, selected_dataset
 from .tokenizers import build_tokenizer
 from .representations import build_representation
@@ -45,14 +45,17 @@ def setup(args):
     checkpoint = config["tokenizer"]["checkpoint"]
     if checkpoint and ("$" in checkpoint or Path(checkpoint).exists()):
         config["tokenizer"]["checkpoint"] = expand_path(checkpoint)
-    for spec in config["static"]["representations"] + config["evaluation"]["representations"]:
+    representations = config["static"]["representations"] + config["evaluation"]["representations"]
+    if config["method"] in CANDIDATE_METHODS:
+        representations = representations + [config["adaptive"]["representation"]]
+    for spec in representations:
         if spec.get("weights"):
             spec["weights"] = expand_path(spec["weights"])
     return config, device
 
 
 def train_main(argv=None):
-    parser = common_parser("FD-only or AdvFD image reconstruction post-training")
+    parser = common_parser("FD-only, AdvFD or candidate image reconstruction post-training")
     parser.add_argument("--resume", help="Trusted local complete checkpoint; never load untrusted pickle files")
     args = parser.parse_args(argv)
     config, device = setup(args)
@@ -97,6 +100,8 @@ def reference_main(argv=None):
     parser.add_argument("--split", choices=["train", "val"], default="train")
     args = parser.parse_args(argv)
     config, device = setup(args)
+    if args.split == "train" and not config["static"]["enabled"]:
+        raise ValueError("C real statistics are versioned and prepared by training, not a frozen reference file")
     count = config["static"]["reference_samples"] if args.split == "train" else config["evaluation"]["num_samples"]
     dataset = selected_dataset(build_dataset(config, args.split), count, config["data"]["seed"], args.split == "train")
     representations = config["static" if args.split == "train" else "evaluation"]["representations"]

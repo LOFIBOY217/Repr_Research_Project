@@ -2,7 +2,7 @@
 
 本设计服务于已确定的三项因素：去掉静态 FD、全参数更新动态特征提取器、真实参考统计必须跟随当前特征提取器更新。EMA 是待验证的估计方式，而不是必须采用的机制。各组共同训练 encoder 和 decoder，以独立评价检验抗 hacking 行为，而不是以重建分数排名作为目标。
 
-独立的重建实验包使用一套训练循环，通过配置切换 FD-only、AdvFD-Reconstruction 和候选方法。Grounded 提供重建适配参考，官方 FD-Loss 提供静态 FD 数值参考，AdvFD 提供动态 FD 参考。A 与 B 已完成本地工程实现，见 [项目说明](../fd_reconstruction/README.md) 与 [B 组迁移边界](../fd_reconstruction/ADVFD_BASELINE.md)；下述候选方法 C 及真实参考估计器切换仍是待实现设计。
+独立的重建实验包使用一个训练入口和共享运行管理，通过配置切换 A、B、C 的独立更新步骤。Grounded 提供重建适配参考，官方 FD-Loss 提供静态 FD 核心，AdvFD 提供动态 FD 核心。三组已完成本地工程实现，见 [项目说明](../fd_reconstruction/README.md)、[B 组迁移边界](../fd_reconstruction/ADVFD_BASELINE.md) 和 [C 组实现](../fd_reconstruction/CANDIDATE_METHOD.md)。C 已接通当前参数重编码、EMA 和固定初值对照；当前 batch 直接估计等未实现扩展仍是设计目标。
 
 ## 三份代码如何分工
 
@@ -34,7 +34,9 @@ fd_reconstruction/
 │   │   ├── statistics.py        # 固定统计、当前参数重算、可选 EMA、静态特征队列
 │   │   ├── whitening.py         # whitening 与数值正则化
 │   │   ├── static_fd.py         # 仅供 FD-only、AdvFD 和消融
-│   │   └── adaptive_fd.py       # 动态 FD，共享于 AdvFD 和候选方法
+│   │   ├── adaptive_fd.py       # B 的官方动态分支
+│   │   ├── candidate_fd.py      # C 独立动态分支及明确标记的消融
+│   │   └── real_reference.py    # C 的当前参数重编码和 EMA/固定初值对照
 │   ├── engine/                 # 训练阶段、梯度开关、优化器、完整断点
 │   ├── evaluation/             # 独立冻结评价器，正式 50k 统计与配对指标
 │   └── diagnostics/            # 指标分歧、表征漂移、EMA 滞后、异常样本
@@ -73,7 +75,7 @@ fd_reconstruction/
 
 对应配置项为 `static.enabled`、`adaptive.trainable_scope` 和 `adaptive.real_stats.mode`。`ours` 不实例化静态训练网络，也不依赖静态分支为动态分支隐式提供特征。评价网络仅在独立评价中加载。
 
-候选方法 C 的拟定真实侧模式为 `current_batch`、`reencode_pool`、`ema`；`frozen_initial` 仅供机制消融。前三种模式用于比较采样噪声、统计滞后和计算成本，尚未选定 C 的最终估计器。已实现的 B 强制保留原有真实侧 EMA，不提供 C 的估计器切换。A 配置中未启用的 `adaptive.real_stats.mode: ema` 只是预留值，不表示 C 必须采用 EMA。
+C 当前主方法采用 `reencode_pool`；`ema` 与 `frozen_initial` 是单独标记的消融，前者包含旧 ψ 的历史，不能叫当前参数精确重算。`current_batch` 仍未实现。B 强制保留原有真实侧 EMA，不提供 C 的估计器切换。A 配置中未启用的 `adaptive.real_stats.mode: ema` 只是预留值，不表示 C 必须采用 EMA。
 
 三组都使用同一重建模型初始化、数据与 E+D 更新范围。单因素消融锁定其余设置，尤其是重建侧 EMA、动态 FD 权重、G/D 学习率、更新频率、whitening 和初始化。如果 `ours_add_static` 与匹配版 AdvFD 配置完全相同，就复用这一组，不重复跑。LoRA 对照必须在同一 ViT backbone 上进行，不能拿 Inception 全参数和 MAE LoRA 直接归因。
 

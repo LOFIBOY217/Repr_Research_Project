@@ -1,0 +1,9 @@
+# Same schedule as C, not the faithful B recipe.
+extends: ours_reconstruction.yaml
+method: ours_add_static
+static:
+  enabled: true
+  representations:
+    - {name: inception, kind: inception, weights: '', pool: cls, weight: 1.0}
+train:
+  output: runs/ours_add_static

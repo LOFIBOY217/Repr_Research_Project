@@ -1,0 +1,29 @@
+# 128 real images / 32 evaluation images: engineering only, NOT scientific FD.
+extends: ours_reconstruction.yaml
+runtime:
+  device: cuda
+  threads: 4
+data:
+  train_path: ${FD_C_SMOKE_ROOT}/images/train
+  val_path: ${FD_C_SMOKE_ROOT}/images/val
+  workers: 2
+adaptive:
+  representation: {weights: '${INCEPTION_WEIGHTS}'}
+  initialization_samples: 128
+  initialization_batch_size: 2
+  real_stats:
+    samples: 128
+    batch_size: 2
+train:
+  output: ${FD_C_SMOKE_ROOT}/real_resumed
+  steps: 2
+  batch_size: 2
+  save_every: 2
+  log_every: 1
+evaluation:
+  engineering_only: true
+  num_samples: 32
+  batch_size: 2
+  paired_metrics: [psnr, ssim]
+  representations:
+    - {name: inception, kind: inception, weights: '${INCEPTION_WEIGHTS}', pool: cls}

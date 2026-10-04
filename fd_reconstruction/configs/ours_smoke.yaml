@@ -1,0 +1,36 @@
+# Engineering only; not a small-sample scientific FD estimate.
+extends: ours_reconstruction.yaml
+runtime:
+  device: cpu
+  threads: 1
+data:
+  kind: synthetic
+  resolution: 16
+  workers: 0
+tokenizer:
+  kind: tiny
+  checkpoint: ''
+  gradient_checkpointing: false
+adaptive:
+  representation: {name: tiny, kind: tiny, seed: 173}
+  lr: 0.0001
+  initialization_samples: 32
+  initialization_batch_size: 8
+  real_stats:
+    samples: 32
+    batch_size: 8
+train:
+  output: runs/ours_smoke
+  steps: 6
+  batch_size: 8
+  lr: 0.0001
+  save_every: 2
+  log_every: 1
+evaluation:
+  engineering_only: true
+  num_samples: 32
+  batch_size: 8
+  paired_metrics: [psnr, ssim]
+  representations:
+    - {name: tiny, kind: tiny, seed: 173}
+    - {name: tiny_holdout, kind: tiny, seed: 999}

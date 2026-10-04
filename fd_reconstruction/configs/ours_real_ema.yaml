@@ -1,0 +1,7 @@
+extends: ours_reconstruction.yaml
+method: ours_real_ema
+adaptive:
+  real_stats:
+    mode: ema
+train:
+  output: runs/ours_real_ema
