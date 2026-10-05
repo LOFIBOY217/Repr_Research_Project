@@ -13,7 +13,14 @@ class TinyRepresentation(nn.Module):
         self.dimension = 6
 
     def forward(self, images):
-        return self.projection(F.adaptive_avg_pool2d(images, 2).flatten(1))
+        height, width = images.shape[-2:]
+        if height % 2 == 0 and width % 2 == 0:
+            # Equal nonoverlapping bins are the adaptive-2 pooling result, but
+            # avg_pool2d has a deterministic CUDA backward for this tiny fixture.
+            pooled = F.avg_pool2d(images, kernel_size=(height // 2, width // 2))
+        else:
+            pooled = F.adaptive_avg_pool2d(images, 2)
+        return self.projection(pooled.flatten(1))
 
 
 class InceptionRepresentation(nn.Module):
