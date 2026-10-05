@@ -93,6 +93,22 @@ def test_acceptance_requires_allocation_before_ml(acceptance, monkeypatch, tmp_p
             entry()
 
 
+@pytest.mark.parametrize("group", [None, "", "AB", "A,B", "C"])
+def test_combined_or_missing_group_refused(acceptance, monkeypatch, group):
+    if group is None:
+        monkeypatch.delenv("FD_ACCEPT_GROUP", raising=False)
+    else:
+        monkeypatch.setenv("FD_ACCEPT_GROUP", group)
+    with pytest.raises(ValueError, match="exactly A or B"):
+        acceptance.selected_group()
+
+
+@pytest.mark.parametrize("group", ["A", "B"])
+def test_single_group_selected(acceptance, monkeypatch, group):
+    monkeypatch.setenv("FD_ACCEPT_GROUP", group)
+    assert acceptance.selected_group() == group
+
+
 def test_audit_restores_hooks_when_training_fails(acceptance, official_small_system, project):
     from recon_fd.objectives.adaptive_fd import AdvFD
     model, static, g_opt, images = official_small_system

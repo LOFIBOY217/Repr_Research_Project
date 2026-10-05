@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 from pathlib import Path
 import yaml
@@ -19,7 +20,8 @@ def load_config(path, overrides=(), _seen=()):
     if path in _seen:
         raise ValueError("Configuration inheritance cycle")
     with path.open() as handle:
-        config = yaml.safe_load(handle)
+        # PyYAML treats JSON's valid exponent-only floats (e.g. 1e-06) as strings.
+        config = json.load(handle) if path.suffix.lower() == ".json" else yaml.safe_load(handle)
     if not isinstance(config, dict):
         raise ValueError("Configuration must be a mapping")
     parent = config.pop("extends", None)
@@ -33,7 +35,10 @@ def load_config(path, overrides=(), _seen=()):
             current = current[part]
         if parts[-1] not in current:
             raise ValueError(f"Unknown override: {key}")
-        current[parts[-1]] = yaml.safe_load(value)
+        try:
+            current[parts[-1]] = json.loads(value)
+        except json.JSONDecodeError:
+            current[parts[-1]] = yaml.safe_load(value)
     return config
 
 
@@ -90,7 +95,11 @@ def validate(config):
         raise ValueError("FD training batch must contain >=2 images")
     if config["train"]["grad_accumulation"] != 1:
         raise NotImplementedError("Gradient accumulation is not a pooled FD batch; first version requires 1")
-    if config["train"]["lr"] <= 0 or not 0 <= config["train"]["grad_clip"] < float("inf"):
+    for key in ("lr", "grad_clip"):
+        value = config["train"][key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"train.{key} must be a number, got {type(value).__name__}")
+    if not 0 < config["train"]["lr"] < float("inf") or not 0 <= config["train"]["grad_clip"] < float("inf"):
         raise ValueError("Positive learning rate and nonnegative finite gradient clipping are required")
     if config["data"]["resolution"] < 8:
         raise ValueError("Image resolution must be >=8")

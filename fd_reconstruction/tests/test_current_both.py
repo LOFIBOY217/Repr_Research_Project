@@ -189,7 +189,8 @@ def test_current_both_cli_resume_and_independent_evaluation(project, tmp_path):
     common = ["--config", str(project / "configs/ours_current_both_smoke.yaml")]
     a, b = tmp_path / "resumed", tmp_path / "continuous"
     train_main([*common, "--set", f"train.output={a}", "--set", "train.steps=2"])
-    train_main([*common, "--set", f"train.output={a}", "--set", "train.steps=4", "--resume",
+    train_main([*common, "--config", str(a / "config.json"),
+                "--set", f"train.output={a}", "--set", "train.steps=4", "--resume",
                 str(a / "checkpoints/step_0000002.pt")])
     train_main([*common, "--set", f"train.output={b}", "--set", "train.steps=4"])
     x, y = [read_checkpoint(p / "checkpoints/step_0000004.pt") for p in (a, b)]

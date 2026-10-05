@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Isolated diagnosis only; production algorithm and tolerance unchanged.
+# Isolated diagnosis only; FD algorithm and tolerance unchanged.
 #SBATCH --job-name=recon-repro-diag
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -12,6 +12,8 @@ set -euo pipefail
 : "${FD_PYTHON:?Set Python}"
 : "${FD_EXPECTED_COMMIT:?Set reviewed commit}"
 : "${FD_DIAG_BASE:?Set new output parent}"
+: "${FD_DIAG_GROUP:?Choose one new training control: A, B, or C}"
+case "$FD_DIAG_GROUP" in A|B|C) ;; *) echo "FD_DIAG_GROUP must be A, B, or C" >&2; exit 2 ;; esac
 : "${FD_AB_SOURCE:?Set completed A/B run root}"
 : "${FD_C_SOURCE:?Set completed current-both C run root}"
 module load StdEnv/2023

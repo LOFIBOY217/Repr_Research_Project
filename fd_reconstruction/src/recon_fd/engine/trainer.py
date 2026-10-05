@@ -12,6 +12,7 @@ from recon_fd.objectives.candidate_fd import CandidateFD
 from recon_fd.objectives.current_both import CurrentBothFD
 from recon_fd.representations import build_representation
 from recon_fd.provenance import write_json, state_fingerprint
+from recon_fd.runtime import determinism_settings
 from .checkpoint import save_checkpoint, restore_checkpoint
 from .adversarial import adversarial_g_step
 from .gradients import checked_grad_norm
@@ -134,6 +135,7 @@ def run_training(config, model, objective, dataset, reference_identities, device
         initialize_statistics(model, objective, dataset, config, device)
         start = 0
         write_json(run / "provenance.json", {"config": config, "data": dataset.identity,
+                   "determinism": determinism_settings(),
                    "references": reference_identities, "tokenizer_initial_sha256": state_fingerprint(model),
                    "torch_version": torch.__version__, "schema": 1})
         save_checkpoint(run / "checkpoints/step_0000000.pt", model, objective, optimizer, 0, signature, dataset.identity, config, critic_optimizer)
@@ -143,6 +145,7 @@ def run_training(config, model, objective, dataset, reference_identities, device
             raise ValueError("Resume checkpoint has already reached the requested step budget")
         if not (run / "provenance.json").exists():
             write_json(run / "provenance.json", {"config": config, "data": dataset.identity,
+                       "determinism": determinism_settings(),
                        "references": reference_identities, "resumed_from_step": start,
                        "torch_version": torch.__version__, "schema": 1})
     write_json(run / "config.json", config)

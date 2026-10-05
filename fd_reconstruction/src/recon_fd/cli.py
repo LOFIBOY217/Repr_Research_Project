@@ -12,6 +12,7 @@ from .engine.trainer import build_objective, run_training
 from .engine.checkpoint import read_checkpoint
 from .evaluation.reference import get_reference
 from .evaluation.runner import export_reconstructions, evaluate_export
+from .runtime import configure_determinism
 
 
 def common_parser(description):
@@ -25,15 +26,13 @@ def setup(args):
     config = load_config(args.config, args.set)
     validate(config)
     device = torch.device(config["runtime"]["device"])
+    configure_determinism(device)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable; use configs/smoke.yaml for offline CPU tests")
     torch.set_num_threads(config["runtime"]["threads"])
     random.seed(config["runtime"]["seed"])
     np.random.seed(config["runtime"]["seed"])
     torch.manual_seed(config["runtime"]["seed"])
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.allow_tf32 = False
-    torch.backends.cuda.matmul.allow_tf32 = False
     if device.type == "cuda":
         torch.cuda.manual_seed_all(config["runtime"]["seed"])
     # Resolve paths into provenance. No implicit dependency on sibling repos.

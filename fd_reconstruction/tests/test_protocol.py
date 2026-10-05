@@ -1,4 +1,5 @@
 import pytest
+import json
 import torch
 from recon_fd.config import load_config, validate
 from recon_fd.data import SyntheticDataset, selected_dataset, ResumableBatchSampler
@@ -7,6 +8,37 @@ from recon_fd.evaluation.reference import get_reference, reference_path, load_re
 from recon_fd.objectives.frechet import frechet_distance
 from recon_fd.representations import build_representation
 from recon_fd.tokenizers import TinyReconstructor
+from recon_fd.provenance import write_json
+
+
+@pytest.mark.parametrize("name", ["fd_only_acceptance_nibi.yaml", "advfd_acceptance_nibi.yaml",
+                                 "ours_current_both_nibi_smoke.yaml"])
+def test_resolved_config_json_roundtrip_keeps_numbers(project, tmp_path, name):
+    config = load_config(project / "configs" / name)
+    config["train"]["lr"] = 1e-6
+    path = tmp_path / "config.json"
+    write_json(path, config)
+    assert "1e-06" in path.read_text()
+    loaded = load_config(path)
+    assert loaded == config
+    assert isinstance(loaded["train"]["lr"], float)
+    validate(loaded)
+
+
+def test_json_inheritance_and_scientific_override(project, tmp_path):
+    path = tmp_path / "child.json"
+    path.write_text(json.dumps({"extends": str(project / "configs/smoke.yaml"), "train": {"lr": 1e-6}}))
+    loaded = load_config(path, ["train.lr=2e-6"])
+    assert loaded["train"]["lr"] == 2e-6
+    validate(loaded)
+
+
+@pytest.mark.parametrize("lr", ["1e-6", True, None, float("nan"), float("inf"), 0, -1])
+def test_invalid_learning_rate_reports_validation_error(project, lr):
+    config = load_config(project / "configs/smoke.yaml")
+    config["train"]["lr"] = lr
+    with pytest.raises(ValueError, match="learning rate|train.lr"):
+        validate(config)
 
 
 def test_config_modes_and_50k_guard(project):

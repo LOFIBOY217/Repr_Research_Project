@@ -11,27 +11,9 @@ from nibi_smoke import prepare_images, worker as common_worker
 
 
 def compare_states(left, right):
-    """GPU comparisons allow rounding; report whether they were bitwise exact."""
-    import torch
-    bitwise = True
-    def compare(a, b):
-        nonlocal bitwise
-        if isinstance(a, torch.Tensor):
-            bitwise = bitwise and torch.equal(a, b)
-            torch.testing.assert_close(a, b, rtol=1e-5, atol=1e-7)
-        elif isinstance(a, dict):
-            assert a.keys() == b.keys()
-            for key in a:
-                compare(a[key], b[key])
-        elif isinstance(a, (tuple, list)):
-            assert len(a) == len(b)
-            for x, y in zip(a, b):
-                compare(x, y)
-        else:
-            assert a == b
-    for field in ("model", "objective", "optimizer", "critic_optimizer"):
-        compare(left[field], right[field])
-    return {"passed": True, "bitwise_equal": bitwise, "rtol": 1e-5, "atol": 1e-7}
+    """Same tolerance as before, now also audit RNG, data and metadata."""
+    from ab_acceptance import compare_checkpoints
+    return compare_checkpoints(left, right)
 
 
 def main(current_both=False):
@@ -40,9 +22,8 @@ def main(current_both=False):
     import torch
     from recon_fd.engine.checkpoint import read_checkpoint
     from recon_fd.provenance import implementation_fingerprint, write_json
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.allow_tf32 = False
-    torch.backends.cuda.matmul.allow_tf32 = False
+    from recon_fd.runtime import configure_determinism, determinism_settings
+    configure_determinism("cuda")
     root = Path(os.environ["FD_C_SMOKE_ROOT"])
     root.mkdir(parents=True, exist_ok=False)
     stages, active_stage = [], "preflight"
@@ -61,6 +42,7 @@ def main(current_both=False):
         write_json(root / "environment.json", {
             "engineering_only": True, "job_id": os.environ["SLURM_JOB_ID"], "git_commit": commit,
             "variant": "current_both" if current_both else "current_real_fake_ema",
+            "determinism": determinism_settings(),
             "implementation_sha256": implementation_fingerprint(), "hostname": os.uname().nodename,
             "gpu": torch.cuda.get_device_name(0), "cuda": torch.version.cuda, "python": sys.version,
             "packages": {n: importlib.metadata.version(n) for n in
@@ -92,7 +74,8 @@ def main(current_both=False):
             common = ["--config", config, "--set", "runtime.device=cuda", *extra]
             a, b = root / f"{label}_resumed", root / f"{label}_continuous"
             run(f"{label}_train", [*common, "--set", f"train.output={a}", "--set", "train.steps=2"])
-            run(f"{label}_resume", [*common, "--set", f"train.output={a}", "--set", "train.steps=4", "--resume",
+            run(f"{label}_resume", [*common, "--config", str(a / "config.json"),
+                                   "--set", f"train.output={a}", "--set", "train.steps=4", "--resume",
                                    str(a / "checkpoints/step_0000002.pt")])
             run(f"{label}_continuous", [*common, "--set", f"train.output={b}", "--set", "train.steps=4"])
             active_stage = f"{label}_resume_comparison"
@@ -100,6 +83,10 @@ def main(current_both=False):
             right = read_checkpoint(b / "checkpoints/step_0000004.pt")
             comparisons[label] = compare_states(left, right)
             del left, right
+            for step in (0, 2):
+                comparisons[f"{label}_step{step}"] = compare_states(
+                    read_checkpoint(a / f"checkpoints/step_{step:07d}.pt"),
+                    read_checkpoint(b / f"checkpoints/step_{step:07d}.pt"))
 
         for step in (0, 4):
             run(f"evaluate_real_{step}", ["--config", real_config, "--checkpoint",
@@ -193,6 +180,9 @@ def main(current_both=False):
             assert metrics["checkpoint_step"] == step and math.isfinite(metrics["fd"]["inception"])
             evaluations[str(step)] = {"fd": metrics["fd"], "paired": metrics["paired"]}
         resources = {p.stem: json.loads(p.read_text()) for p in root.glob("*.resources.json")}
+        assert len(resources) == len(stages) and all(v["succeeded"] for v in resources.values())
+        assert all(v["determinism"]["algorithms"] and not v["determinism"]["warn_only"]
+                   for v in resources.values())
         write_json(root / "result.json", {
             "status": "passed", "engineering_only": True, "job_id": os.environ["SLURM_JOB_ID"],
             "git_commit": commit, "stages": stages, "seconds": time.monotonic() - started,

@@ -111,7 +111,9 @@ A 配置中未启用的 `adaptive.real_stats.mode: ema` 是预留值；B 中它�
 
 输出在 `runs/`，参考统计在 `cache/`，均不提交 Git。断点恢复可增加 `train.steps` 或改变日志间隔，不能更换训练数据、目标统计、学习率或实现代码。若回到较早检查点而原目录已有更晚日志，应改用新输出目录，防止混合轨迹。普通梯度累积不等于大 batch FD，所以首版明确只允许 `grad_accumulation=1`。
 
-`jobs/` 提供单卡模板。当前 A/B 工程验收入口是 `jobs/ab_acceptance_nibi.sbatch`，单卡依次执行两组的预训练小范围训练、两次恢复、连续训练对照、顺序/梯度审计及独立评价；C 使用 `jobs/ours_current_both_nibi.sbatch`。检查范围与尚未通过的 GPU 项见 [验收记录](VALIDATION.md)。A/B 新入口使用独立 checkout，不覆盖旧 A 作业的代码；排队不代表验收完成。集群执行前设置 `FD_PROJECT`、`FD_PYTHON`、数据与权重路径；通用训练模板通过 `FD_CONFIG` 选择 A 或 B。
+`jobs/` 提供单卡模板。A/B 工程验收使用 `jobs/ab_acceptance_nibi.sbatch`，必须设置 `FD_ACCEPT_GROUP=A` 或 `B`，每个作业只执行一组的训练、两次恢复、连续训练对照、顺序/梯度审计及独立评价；不再默认合并 A/B。C 使用 `jobs/ours_current_both_nibi.sbatch`，按 A、B、C 分别提交、逐组运行。检查范围与 GPU 结果见 [验收记录](VALIDATION.md)。集群执行前设置 `FD_PROJECT`、`FD_PYTHON`、数据与权重路径；通用训练模板通过 `FD_CONFIG` 选择 A 或 B。
+
+所有 CLI 的训练、恢复和评价共享严格确定性设置：`torch.use_deterministic_algorithms(True, warn_only=False)`、关闭 TF32/benchmark、开启 cuDNN 确定性；CUDA 的 cuBLAS workspace 默认 `:4096:8`，不支持的配置会报错。实际开关写入训练 provenance 和验收资源记录，不改变 FD 公式或容差，也不承诺跨设备或 PyTorch 版本逐位相等。配置按扩展名使用 JSON/YAML 解析，保存的 `config.json` 可以直接用于恢复；CLI 数字覆盖支持 `train.lr=1e-6`。
 
 ## 来源与待验证项
 
@@ -127,6 +129,6 @@ A 配置中未启用的 `adaptive.real_stats.mode: ema` 是预留值；B 中它�
 
 代码、配置与作业脚本统一通过本地 commit/push → GitHub → nibi pull 同步；不再用 rsync/scp 覆盖服务器代码。规则保存在 [AGENTS.md](AGENTS.md)。仓库为 `LOFIBOY217/Repr_Research_Project`，重建开发分支为 `codex/fd-reconstruction-baselines`；后续服务器更新使用该分支的 `git pull --ff-only`，先确认工作区干净且无作业依赖正在修改的目录，并核对 commit。
 
-nibi 的旧 C checkout `Repr_Research_Project_fd_reconstruction` 和双侧 C checkout `Repr_Research_Project_fd_current_both` 均有排队作业依赖，不能直接 pull 改写。A/B 工程验收使用另外的独立 GitHub checkout。旧 `Repr_Research_Project` 工作目录仍有未提交文件，旧 A smoke 作业 23218660 在 2026 年 10 月 4 日本次检查时仍为 PENDING 且使用旧目录；不覆盖、切换或 pull 旧目录，也没有取消该作业。代码同步和作业重新提交是两件事，不能把 push/pull 成功写成 GPU 测试已通过。
+nibi 的旧 C checkout 和历史结果保留。重现性诊断结束后，先确认没有依赖验收 checkout 的活动作业，再在干净的验收 checkout 上 pull 本次修复；旧 `Repr_Research_Project` 工作目录有未提交文件，不覆盖、切换或 pull 该目录。代码同步和作业重新提交是两件事，不能把 push/pull 成功写成 GPU 测试已通过。
 
 运行输出、数据、权重、环境和主机专用作业记录不推送。公开仓库不包含用户提供的 Grounded 原始源码；该本地参考不影响本项目运行或测试。FD-Loss 和 AdvFD 的公开 MIT 快照及必要许可可以随代码分发。

@@ -1,8 +1,7 @@
-"""A/B acceptance on one SLURM GPU; helpers also exercise the CPU fixtures.
+"""One independently selected A or B acceptance per SLURM job/GPU.
 
 This file audits the existing training path without modifying its algorithms.
-Each group reports separately; a failed A does not silently skip B. C has its
-own already-submitted current-both controller and immutable checkout.
+No default combined A/B execution. C has its own current-both controller.
 """
 import importlib.metadata
 import json
@@ -108,7 +107,9 @@ def protocol(root, label, common, run):
     for start, stop in ((0, 2), (2, 4), (4, 6)):
         arguments = [*common, "--set", f"train.output={resumed}", "--set", f"train.steps={stop}"]
         if start:
-            arguments += ["--resume", str(resumed / f"checkpoints/step_{start:07d}.pt")]
+            # Exercise the actual saved JSON, not only the original YAML recipe.
+            arguments += ["--config", str(resumed / "config.json"),
+                          "--resume", str(resumed / f"checkpoints/step_{start:07d}.pt")]
         run(f"{label}_to_{stop}", arguments)
     run(f"{label}_continuous", [*common, "--set", f"train.output={continuous}", "--set", "train.steps=6"])
     comparisons = {}
@@ -221,11 +222,11 @@ def worker():
     from recon_fd.cli import train_main, evaluate_main
     from recon_fd.engine import trainer
     from recon_fd.provenance import write_json
+    from recon_fd.runtime import determinism_settings
     stage, root, *arguments = sys.argv[2:]
     root = Path(root)
     records = []
     trainer.adversarial_g_step = audited_b_step(trainer.adversarial_g_step, records)
-    torch.backends.cudnn.deterministic = True
     torch.cuda.reset_peak_memory_stats()
     started, succeeded = time.monotonic(), False
     try:
@@ -236,6 +237,7 @@ def worker():
         write_json(root / f"{stage}.trace.json", records)
         write_json(root / f"{stage}.resources.json", {
             "succeeded": succeeded, "seconds": time.monotonic() - started,
+            "determinism": determinism_settings(),
             "peak_allocated_gib": torch.cuda.max_memory_allocated() / 2**30,
             "peak_reserved_gib": torch.cuda.max_memory_reserved() / 2**30})
 
@@ -283,6 +285,8 @@ def group_main(group, root):
             evaluations[label] = evaluated
         resources = {p.stem: json.loads(p.read_text()) for p in root.glob("*.resources.json")}
         assert len(resources) == len(stages) and all(v["succeeded"] for v in resources.values())
+        assert all(v["determinism"]["algorithms"] and not v["determinism"]["warn_only"]
+                   for v in resources.values())
         write_json(root / "result.json", {"status": "passed", "group": group, "engineering_only": True,
             "git_commit": os.environ["FD_EXPECTED_COMMIT"], "job_id": os.environ["SLURM_JOB_ID"],
             "steps": 6, "train_pool_images": 128, "evaluation_images_per_checkpoint": 32,
@@ -295,8 +299,16 @@ def group_main(group, root):
         raise
 
 
+def selected_group():
+    group = os.environ.get("FD_ACCEPT_GROUP")
+    if group not in {"A", "B"}:
+        raise ValueError("Set FD_ACCEPT_GROUP to exactly A or B; submit each group separately")
+    return group
+
+
 def main():
     require_allocation()
+    group_to_run = selected_group()
     import torch
     from nibi_smoke import prepare_images
     from recon_fd.provenance import implementation_fingerprint, write_json
@@ -324,7 +336,7 @@ def main():
                          ("torch", "torchvision", "timm", "diffusers", "numpy", "scikit-image")}})
         write_json(root / "image_manifest.json", {"engineering_only": True,
             "samples": prepare_images(Path(os.environ["IMAGENET_ROOT"]), root / "images")})
-        for group in ("A", "B"):
+        for group in (group_to_run,):
             active = group
             # Separate process releases previous group's model/checkpoint memory.
             result = subprocess.run([sys.executable, "-u", __file__, "group", group, str(root / group)])
@@ -339,7 +351,7 @@ def main():
             "C": "Separate current-both job; this result does not certify C or 50k experiments."})
         if status != "passed":
             raise SystemExit(1)
-        print(f"A/B ALL CHECKS PASSED: {root / 'result.json'}", flush=True)
+        print(f"{group_to_run} ALL CHECKS PASSED: {root / 'result.json'}", flush=True)
     except Exception as error:
         write_json(root / "result.json", {"status": "failed", "engineering_only": True,
             "stage": active, "groups": groups, "error": repr(error)})

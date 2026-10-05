@@ -37,6 +37,7 @@ def worker():
     import torch
     from recon_fd.cli import train_main, evaluate_main
     from recon_fd.provenance import write_json
+    from recon_fd.runtime import determinism_settings
     stage, root, *arguments = sys.argv[2:]
     started = time.monotonic()
     torch.cuda.reset_peak_memory_stats()
@@ -47,6 +48,7 @@ def worker():
     finally:
         write_json(Path(root) / f"{stage}.resources.json", {
             "succeeded": succeeded, "seconds": time.monotonic() - started,
+            "determinism": determinism_settings(),
             "peak_allocated_gib": torch.cuda.max_memory_allocated() / 2**30,
             "peak_reserved_gib": torch.cuda.max_memory_reserved() / 2**30,
         })

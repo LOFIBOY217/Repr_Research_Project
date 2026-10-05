@@ -2,25 +2,33 @@
 
 验证日期：2026 年 10 月 4 日。环境为 macOS ARM64、Python 3.13.5、CPU；没有 CUDA。所有小模型结果只用于工程验证，不是 ImageNet 实验结果。
 
+## 当前修复与验证状态
+
+本次配置与确定性修复后，本地完整回归 **126 passed**，Python 编译、依赖检查和修改后的作业 Bash 语法检查通过。新增 31 项覆盖 JSON 数值往返、科学计数法覆盖、非法学习率、共享严格确定性设置、单组选取、诊断失败退出码，以及 A/B/C 各自的 JSON 配置恢复控制实验。原有端到端恢复测试和实际验收流程也改为读取训练保存的 JSON。
+
+JSON 配置使用 `json.load`，YAML 配置保持 `yaml.safe_load`；修复 `1e-06` 被当作字符串的问题。训练、恢复和评价共同开启 `torch.use_deterministic_algorithms(True, warn_only=False)`，保留关闭 TF32/benchmark、cuDNN 确定性与 cuBLAS workspace 设置，并记录实际开关。诊断控制失败或缺失时写 `status=failed` 并以非零状态退出。FD 计算核心、各组目标函数、D/G 更新步骤和 `rtol=1e-5, atol=1e-7` 容差均未改动。
+
+按照用户确认，A、B、C 独立提交、逐组运行；A/B 入口必须显式指定一组，诊断的新训练控制也不再合并三组。新的源码指纹与旧检查点不同，重新初始化验收运行，不把旧状态迁移后冒充精确恢复。当前修复的完整 GPU 验收尚未完成，下一步先单独提交 A，再依据结果推进 B/C；没有启动正式 50k 实验。
+
 ## ABC 工程验收
 
 本地 A/B 验收脚本完成时回归为 **92 passed**；新增重现性诊断工具后为 **95 passed**，增加了差异定位、重复梯度计算和 SLURM 入口保护 3 项检查。在此前 87 项基础上新增的 A/B 验收配置检查、A/B 各自完整的验收流程、拒绝无 SLURM 的集群入口、异常后审计钩子恢复，共 5 项。A/B 两组在本地 CPU 小模型上都实际执行训练到 2 步、恢复到 4 步、再次恢复到 6 步，并与独立连续 6 步比较；0/2/4/6 步的模型、统计、优化器、RNG 和数据状态逐位一致，训练图片顺序相同。初始与最终检查点均完成 32 图独立固定评价及完整导图清单检查。比较器能拒绝参数、RNG 或 D 优化器缺失等错误。
 
-新入口 `jobs/ab_acceptance_nibi.sbatch` 在单张 GPU 上依次验收 A 和 B；一组失败仍执行另一组并分别报告。使用当前官方数值核心、同一预训练 SD-VAE、Inception 和确定性 128 图 ImageNet train 子集；val 子集为 32 图。小模型和预训练模型分别执行上述恢复流程，记录阶段耗时、峰值显存、环境、commit 和实现指纹。入口仅允许 SLURM allocation，且检查提交时指定的 commit；不在 login node 运行 ML。
+入口 `jobs/ab_acceptance_nibi.sbatch` 现在要求 `FD_ACCEPT_GROUP=A` 或 `B`，每个单卡作业只验收一组；旧作业曾在一个作业内依次执行 A/B。使用当前官方数值核心、同一预训练 SD-VAE、Inception 和确定性 128 图 ImageNet train 子集；val 子集为 32 图。小模型和预训练模型分别执行上述恢复流程，记录阶段耗时、峰值显存、环境、commit 和实现指纹。入口仅允许 SLURM allocation，且检查提交时指定的 commit；不在 login node 运行 ML。
 
 A 检查 E+D 更新、静态特征和真实参考完全不变、官方统计每步提交一次。B 另外检查动态参数启动前不变、启动后更新，静态分支不变，两个 EMA 及 D 更新次数正确。实际优化器调用期间审计梯度范围和执行顺序，要求每步只重建一次，按 D→G→统计提交执行；同时保留不更新 D 的步骤。为在短测中覆盖激活边界，B 的 start/warmup 显式改成 2/2，正式配置仍是 1000/4000；损失核心不改。此 GPU 验收限定 Inception 全参数分支，不包含 SIM 多静态表征或预训练 MAE/SigLIP LoRA。
 
 C 使用 `ours_current_both` 单卡短测，验收双侧统计的当前参数版本、整池梯度、无 EMA、恢复和独立评价。2026 年 10 月 4 日分区恢复后，A/B 作业 23225277 和新版 C 作业 23225144 均运行但最终 FAILED：真实模型的训练与恢复阶段退出正常，随后在恢复结果与连续训练结果的参数一致性比较中失败。A/B 完成 6 步，C 完成 4 步；真实模型的独立评价尚未执行，不能标记 GPU 验收通过。原始失败产物保留，主机专用记录在忽略的 `validation/nibi-smoke-*.json`。只有各组实际 passed 且作业正常结束，才能标记基础 CUDA 工程验收完成。
 
-这轮不验收 50k 运行成本、多表征/LPIPS 完整集成或视觉 hacking 效果。源码 `src/recon_fd` 没有因新增验收或诊断脚本改变，实现指纹仍为 `c6f36350fcb5ccb76ae7fb2a8e65d6c21db77ee8935fa6a2276bfe30ccd7a3a4`；诊断仍可读取原始失败检查点，不需要迁移状态。
+这轮不验收 50k 运行成本、多表征/LPIPS 完整集成或视觉 hacking 效果。原失败验收和首次诊断使用的实现指纹为 `c6f36350fcb5ccb76ae7fb2a8e65d6c21db77ee8935fa6a2276bfe30ccd7a3a4`；本次修复改变了运行设置与配置读取代码，不再沿用该指纹。原始失败检查点保留为只读诊断证据。
 
 ## CUDA 重现性诊断
 
 旧日志显示三个方法在尚未执行 checkpoint 恢复的前两步就已产生差异。例如 A 两次第 2 步的总梯度范数为 0.09605559 与 0.09609383，C 为 1.36646616 与 1.35977364。A/B 的图片 ID 顺序相同；这不支持将全部差异直接归因于恢复操作。原失败比较报告只展示首个不满足容差的张量，不是全模型最大误差，因此尚不能仅按该数字放宽容差。
 
-验收 worker 只设置 `torch.backends.cudnn.deterministic=True`，没有开启全局 `torch.use_deterministic_algorithms(True)`。前者不覆盖全部 PyTorch 算子，参见 [官方重现性说明](https://docs.pytorch.org/docs/2.14/notes/randomness.html#cuda-convolution-determinism)。具体候选包括官方 Inception `resize_tf` 的重复高级索引反向累加、VAE 的 CUDA 反向算子，以及 FD 对输入扰动的数值敏感性；此处是待验证假设，不冒充实测根因。
+原验收 worker 只设置 `torch.backends.cudnn.deterministic=True`，没有开启全局 `torch.use_deterministic_algorithms(True)`。前者不覆盖全部 PyTorch 算子，参见 [官方重现性说明](https://docs.pytorch.org/docs/2.14/notes/randomness.html#cuda-convolution-determinism)。作业 23232468 的实际 H100 测试显示：相同输入和参数下，VAE 的 eval 反向及 train/checkpointing 反向均有微小不一致；resize、Inception 和官方 FD 在本次四次重复中前向/反向一致。开启全局严格确定性后，全部七类组件测试前向/反向均逐位一致。算子记录包含 efficient attention，但尚未用单算子消融确认唯一内部责任算子；此前 resize 的猜测未获本次实验支持。
 
-`scripts/diagnose_repro.py` 与 `jobs/diagnose_repro_nibi.sbatch` 只在隔离进程中诊断：逐项比较旧检查点；对相同输入/参数重复计算缩放、Inception、VAE、官方 FD 和端到端梯度；记录实际派发的算子；以全局确定性作为实验干预，另做 A/B/C 的 2→4 步恢复与连续 4 步对照。诊断不改变正式源码、旧结果或 `rtol=1e-5, atol=1e-7` 验收容差，也不等于重新通过完整工程验收。单卡诊断作业 23232468 已提交，GPU 结果待回收。
+作业 23232468 的三个完整训练控制全部在启动时被 JSON→YAML 的学习率类型错误阻塞，因此虽作业退出码为零、旧汇总写 `diagnosis_completed`，并未通过完整训练验证。该错误属于诊断配置读写，不是 FD 方法失效证据。本次修复解析器并加入失败传播；`scripts/diagnose_repro.py` 后续通过 `FD_DIAG_GROUP` 只对选定的一组启动 2→4 步恢复与连续 4 步对照。组件基线允许观察到不一致，严格模式不一致、探针错误或训练控制失败则整体失败；诊断成功仍不等于完整工程验收通过。
 
 ## 双侧当前统计扩展
 
@@ -100,10 +108,10 @@ C 新增 14 项检查：无静态构造/初始化依赖、真实参考与当前�
 
 ## 尚未验证
 
-尚未运行真实预训练 tokenizer 的完整 ImageNet 后训练、50k 正式评价、预训练大表征或 LPIPS 权重的完整集成流程，也未验证 CUDA 峰值显存、吞吐与集群环境。单元测试不证明大模型长训练稳定，更不证明已经发现或避免 FD hacking。
+尚未运行真实预训练 tokenizer 的完整 ImageNet 后训练、50k 正式评价、预训练大表征或 LPIPS 权重的完整集成流程。旧 CUDA 短测已执行并留下显存与耗时记录，但完整工程验收失败；当前确定性修复仍需新 GPU 作业验证。单元测试不证明大模型长训练稳定，更不证明已经发现或避免 FD hacking。
 
-此前 A 的 nibi smoke 作业编号为 23218660；2026 年 10 月 4 日检查仍为 PENDING，工作目录是旧 checkout。没有覆盖该目录、取消或重提交作业。新 GitHub checkout `Repr_Research_Project_fd_reconstruction` 在 C 同步前检查为干净且无依赖它的作业。C 已完成本地工程实现，GPU 短测入口为 `jobs/ours_smoke_nibi.sbatch`；提交后必须以实际日志和 `result.json` 为验证依据。MAE/SigLIP 大型预训练 LoRA/full 尚未跑通 GPU 集成。
+此前 A 的 nibi smoke 作业 23218660 已正常结束，但使用旧版本和不同验收协议，不算当前 A/B/C 通过。旧 C 作业 23224956、新双侧 C 作业 23225144 均失败；原作业与结果未覆盖。当前 C 入口为 `jobs/ours_current_both_nibi.sbatch`，保留旧 `jobs/ours_smoke_nibi.sbatch` 作为单侧当前统计的历史对照。MAE/SigLIP 大型预训练 LoRA/full 尚未跑通 GPU 集成。
 
-本次集群检查显示 H100、A100、MIG 和其他 GPU 节点处于 down、drained 或 inval，属于外部调度限制。短测使用真实预训练 SD-VAE/Inception、128 张训练参考和各 32 张评价图，只验证实现、参考重算与恢复，不作为 50k FD 稳定性或视觉 hacking 证据。排队或成功 pull 不能写成 CUDA 测试通过。
+此前集群节点不可用造成的排队已结束，相关作业已实际运行；不能继续把当前失败归因于当时的调度限制。短测使用真实预训练 SD-VAE/Inception、128 张训练参考和各 32 张评价图，只验证实现、参考重算与恢复，不作为 50k FD 稳定性或视觉 hacking 证据。排队或成功 pull 不能写成 CUDA 测试通过。
 
 A/B 静态核心差异已修正；执行顺序已由用户确认跟随官方代码 D→G，现有时序回归测试与该决定一致。原训练预算、精度、预处理及参考/评价数据范围仍未全部对齐，见 `ADVFD_BASELINE.md`。测试通过不能替代其余研究协议决策，也不能作为完整论文复现的声明。

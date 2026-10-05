@@ -1,7 +1,8 @@
 """Read-only old-run analysis and isolated CUDA reproducibility experiments.
 
-Does not modify training algorithms, checkpoints, or acceptance tolerances.
-Strict determinism is an experimental intervention confined to this process.
+Does not modify FD algorithms, old checkpoints, or acceptance tolerances.
+Component probes deliberately compare baseline versus strict execution.
+New training controls use the shared strict runtime, for one selected group.
 """
 import gc
 import json
@@ -11,6 +12,9 @@ import subprocess
 import sys
 import time
 import traceback
+
+REQUIRED_PROBES = ("resize_tf", "inception_input", "vae_parameters_eval", "official_fd_features",
+                   "official_fd_pixels", "end_to_end_parameters", "vae_parameters_train_checkpointed")
 
 
 def difference(a, b, path="root"):
@@ -173,46 +177,69 @@ def component_probes(root):
     return report
 
 
-def strict_training(root):
+def strict_training(root, group):
     """New isolated 2->4 vs continuous-4 runs, leaving old evidence untouched."""
     from recon_fd.engine.checkpoint import read_checkpoint
     from recon_fd.provenance import write_json
     from ab_acceptance import compare_checkpoints
     reports = {}
-    for group, source in (("A", Path(os.environ["FD_AB_SOURCE"]) / "A"),
-                          ("B", Path(os.environ["FD_AB_SOURCE"]) / "B"),
-                          ("C", Path(os.environ["FD_C_SOURCE"]))):
-        folder = root / f"strict_{group}"
-        folder.mkdir()
+    if group not in {"A", "B", "C"}:
+        raise ValueError("Select exactly one diagnostic training group: A, B, or C")
+    source = (Path(os.environ["FD_C_SOURCE"]) if group == "C"
+              else Path(os.environ["FD_AB_SOURCE"]) / group)
+    folder = root / f"strict_{group}"
+    folder.mkdir()
+    reports[group] = {"status": "running", "stages": []}
+    try:
         # Preserve original resolved configuration, data, and learning rates.
         config = json.loads((source / "real_resumed/config.json").read_text())
         write_json(folder / "config.json", config)
-        reports[group] = {"status": "running", "stages": []}
-        try:
-            for label, end, resume in (("train", 2, False), ("resume", 4, True), ("continuous", 4, False)):
-                run = folder / ("continuous" if label == "continuous" else "resumed")
-                args = ["--config", str(folder / "config.json"), "--set", f"train.output={run}",
-                        "--set", f"train.steps={end}", "--set", "train.save_every=2"]
-                if resume:
-                    args += ["--resume", str(run / "checkpoints/step_0000002.pt")]
-                with (folder / f"{label}.log").open("w") as handle:
-                    result = subprocess.run([sys.executable, "-u", __file__, "strict-worker", *args],
-                                            stdout=handle, stderr=subprocess.STDOUT)
-                if result.returncode:
-                    raise RuntimeError(f"{label} exit {result.returncode}: " + (folder / f"{label}.log").read_text()[-7000:])
-                reports[group]["stages"].append(label)
-                print("STRICT TRAIN", group, label, "passed", flush=True)
-            reports[group]["comparisons"] = {}
-            for step in (0, 2, 4):
-                reports[group]["comparisons"][str(step)] = compare_checkpoints(
-                    read_checkpoint(folder / f"resumed/checkpoints/step_{step:07d}.pt"),
-                    read_checkpoint(folder / f"continuous/checkpoints/step_{step:07d}.pt"))
-            reports[group]["status"] = "passed"
-        except Exception as error:
-            reports[group].update(status="failed", error=repr(error), traceback=traceback.format_exc())
-        write_json(root / "strict_training.json", reports)
-        print("STRICT RESULT", group, json.dumps(reports[group]), flush=True)
+        for label, end, resume in (("train", 2, False), ("resume", 4, True), ("continuous", 4, False)):
+            run = folder / ("continuous" if label == "continuous" else "resumed")
+            args = ["--config", str(folder / "config.json"), "--set", f"train.output={run}",
+                    "--set", f"train.steps={end}", "--set", "train.save_every=2"]
+            if resume:
+                args += ["--resume", str(run / "checkpoints/step_0000002.pt")]
+            with (folder / f"{label}.log").open("w") as handle:
+                result = subprocess.run([sys.executable, "-u", __file__, "strict-worker", *args],
+                                        stdout=handle, stderr=subprocess.STDOUT)
+            if result.returncode:
+                raise RuntimeError(f"{label} exit {result.returncode}: " + (folder / f"{label}.log").read_text()[-7000:])
+            reports[group]["stages"].append(label)
+            print("STRICT TRAIN", group, label, "passed", flush=True)
+        reports[group]["comparisons"] = {}
+        for step in (0, 2, 4):
+            reports[group]["comparisons"][str(step)] = compare_checkpoints(
+                read_checkpoint(folder / f"resumed/checkpoints/step_{step:07d}.pt"),
+                read_checkpoint(folder / f"continuous/checkpoints/step_{step:07d}.pt"))
+        reports[group]["status"] = "passed"
+    except Exception as error:
+        reports[group].update(status="failed", error=repr(error), traceback=traceback.format_exc())
+    write_json(root / "strict_training.json", reports)
+    print("STRICT RESULT", group, json.dumps(reports[group]), flush=True)
     return reports
+
+
+def finish_diagnosis(root, probes, training, group):
+    """Retain all evidence, but propagate missing/failed controls to SLURM."""
+    from recon_fd.provenance import write_json
+    failures = []
+    for mode in ("baseline", "strict"):
+        for name in REQUIRED_PROBES:
+            probe = probes.get(mode, {}).get(name, {})
+            if "error" in probe or not {"forward_bitwise_equal", "backward_bitwise_equal"} <= probe.keys():
+                failures.append(f"{mode}/{name}: missing or errored probe")
+            elif mode == "strict" and not (probe["forward_bitwise_equal"] and probe["backward_bitwise_equal"]):
+                failures.append(f"strict/{name}: repeat mismatch")
+    if set(training) != {group} or training.get(group, {}).get("status") != "passed":
+        failures.append(f"{group}: strict training control did not pass")
+    write_json(root / "result.json", {
+        "status": "failed" if failures else "diagnosis_completed", "diagnosis_only": True,
+        "component_probes": probes, "strict_training": training, "failures": failures,
+        "boundary": "Diagnosis only; not complete engineering acceptance or a 50k result.",
+    })
+    if failures:
+        raise SystemExit(1)
 
 
 def main():
@@ -232,6 +259,9 @@ def main():
         return
     if sys.argv[1:]:
         raise ValueError("Expected no argument or strict-worker")
+    group = os.environ.get("FD_DIAG_GROUP")
+    if group not in {"A", "B", "C"}:
+        raise ValueError("Set FD_DIAG_GROUP to exactly A, B, or C; no combined training")
     root = Path(os.environ["FD_DIAG_ROOT"])
     root.mkdir(parents=True, exist_ok=False)
     stage = "preflight"
@@ -251,10 +281,8 @@ def main():
         gc.collect()
         torch.cuda.empty_cache()
         stage = "strict_training"
-        training = strict_training(root)
-        write_json(root / "result.json", {"status": "diagnosis_completed", "diagnosis_only": True,
-            "component_probes": probes, "strict_training": training,
-            "boundary": "Experimental flags only; not an algorithm fix, new acceptance, or 50k result."})
+        training = strict_training(root, group)
+        finish_diagnosis(root, probes, training, group)
     except Exception as error:
         write_json(root / "result.json", {"status": "failed", "diagnosis_only": True,
             "stage": stage, "error": repr(error), "traceback": traceback.format_exc()})

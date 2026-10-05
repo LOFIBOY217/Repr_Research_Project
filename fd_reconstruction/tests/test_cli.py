@@ -3,6 +3,7 @@ import pytest
 import torch
 from recon_fd.cli import train_main, evaluate_main
 from recon_fd.engine.checkpoint import read_checkpoint
+from recon_fd.runtime import determinism_settings
 
 
 def test_end_to_end_train_resume_evaluate(project, tmp_path):
@@ -11,6 +12,10 @@ def test_end_to_end_train_resume_evaluate(project, tmp_path):
     common = ["--config", config, "--set", f"static.reference_cache={cache}"]
     run = tmp_path / "training"
     train_main([*common, "--set", f"train.output={run}", "--set", "train.steps=2"])
+    # Resume the actual saved JSON (including exponent-form optimizer numbers).
+    common = ["--config", str(run / "config.json")]
+    assert determinism_settings()["algorithms"] and not determinism_settings()["warn_only"]
+    assert json.loads((run / "provenance.json").read_text())["determinism"]["algorithms"]
     saved = run / "checkpoints/step_0000002.pt"
     train_main([*common, "--set", f"train.output={run}", "--set", "train.steps=4", "--resume", str(saved)])
     final = run / "checkpoints/step_0000004.pt"
