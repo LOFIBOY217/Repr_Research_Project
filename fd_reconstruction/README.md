@@ -4,6 +4,8 @@
 
 当前实现 A：FD-only，B：AdvFD-Reconstruction，以及 C：无 static、动态提取器全参数训练、真实参考按当前 ψ 重编码。三组都是原图 → 可训练 encoder → latent → 可训练 decoder → 重建图；B 保留静态 FD 和原动态分支，C 不混入 A/B。没有像素、感知或 GAN 训练损失。C 的实现、消融和验证边界见 [C 组说明](CANDIDATE_METHOD.md)。
 
+A、B、C 的独立单卡工程验收已于 2026 年 10 月 4 日完成：预训练 SD-VAE/Inception、128 张 ImageNet 训练图、32 张验证图；训练恢复一致性、各自的状态／更新检查与独立评价均通过。完整记录见 [验收记录](VALIDATION.md)。正式 50k 训练与评价尚未运行。
+
 C 新增双侧当前统计版本 `configs/ours_current_both.yaml`：真实与重建侧都按当前模型重编码同一个 50k 图片池，不使用 EMA；以两遍分块链式求导获得整池梯度。旧 `ours_reconstruction.yaml` 仍保留 fake EMA，作为不同协议的对照。新版每步覆盖整池，batch size 仅控制 microbatch；不能直接比较两者的步数。
 
 ## 已实现的范围
@@ -121,7 +123,7 @@ A 配置中未启用的 `adaptive.real_stats.mode: ema` 是预留值；B 中它�
 
 旧 A checkpoint 的统计键及实现指纹与当前版本不同，不能直接续训；较早 B checkpoint 也会因全包指纹变化被严格恢复检查拒绝，不自动放宽检查。
 
-当前已完成本地 CPU 单元测试和端到端小模型验证。真实预训练权重的完整后训练、ImageNet 50k 和 B 的 CUDA 显存尚未验证；不将这些未验证项写成“无 bug”或方法有效的结论。
+当前已完成本地 CPU 单元测试与真实预训练 SD-VAE/Inception 的单卡短步数工程验收。正式长训练、ImageNet 50k、多表征和 hacking 效果仍待验证；不把工程通过等同于方法有效。
 
 具体检查项与结果见 [本地验证记录](VALIDATION.md)。
 
