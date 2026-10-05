@@ -1,0 +1,13 @@
+# C: no static FD; current 50k real/fake pools, full trainable Inception.
+# Four full-pool optimizer steps expose 200k paired samples; not 10k minibatch steps.
+extends: ours_current_both.yaml
+adaptive:
+  representation: {name: inception, kind: inception, weights: '${INCEPTION_WEIGHTS}', pool: cls}
+  initialization_batch_size: 16
+  real_stats:
+    mode: reencode_pool
+    samples: 50000
+    batch_size: 16
+    seed: 217
+train:
+  batch_size: 16

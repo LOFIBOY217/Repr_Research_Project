@@ -1,0 +1,5 @@
+# A: official FD-Loss, single Inception space, 50k reference/initialization.
+extends: fd_only_inception.yaml
+static:
+  representations:
+    - {name: inception, kind: inception, weights: '${INCEPTION_WEIGHTS}', pool: cls, weight: 1.0}

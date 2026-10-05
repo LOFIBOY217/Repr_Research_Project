@@ -1,0 +1,6 @@
+# B: matched single-Inception AdvFD reconstruction baseline, not paper SIM.
+# Retains the official D->G adaptation and static + adversarial FD branches.
+extends: advfd_reconstruction_inception.yaml
+static:
+  representations:
+    - {name: inception, kind: inception, weights: '${INCEPTION_WEIGHTS}', pool: cls, weight: 1.0}
