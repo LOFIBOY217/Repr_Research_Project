@@ -10,6 +10,7 @@ from recon_fd.objectives.statistics import RunningMoments
 from recon_fd.objectives.frechet import frechet_distance
 from recon_fd.representations import build_representation
 from .reference import get_reference
+from .progress import log_progress, should_log
 
 
 def quantize(images):
@@ -50,9 +51,12 @@ def export_reconstructions(model, dataset, directory, config, device):
         if not torch.isfinite(images).all() or images.shape != batch["image"].shape:
             raise ValueError("Invalid reconstruction during export")
         arrays = quantize(images).permute(0, 2, 3, 1).cpu().numpy()
+        previous = offset
         for array in arrays:
             Image.fromarray(array).save(directory / f"{offset:06d}.png")
             offset += 1
+        if should_log(offset, previous, len(dataset)):
+            log_progress("export", offset, len(dataset))
     if offset != len(dataset):
         raise ValueError("Export count mismatch")
     result = {"identity": identity, "sample_ids": dataset.ids, "count": offset}
@@ -88,7 +92,10 @@ def evaluate_export(dataset, directory, output, config, device):
             n = len(batch["id"])
             reconstructions = reconstructed_batch(directory, offset, n).to(device)
             accumulator.update(extractor(reconstructions))
+            previous = offset
             offset += n
+            if should_log(offset, previous, len(dataset)):
+                log_progress(f"features {spec['name']}", offset, len(dataset))
         current = accumulator.moments()
         results["fd"][spec["name"]] = float(frechet_distance(reference.mean, reference.cov, current.mean, current.cov))
         results["representations"][spec["name"]] = identity
@@ -130,6 +137,8 @@ def evaluate_export(dataset, directory, output, config, device):
                     sums[name] += values[name][i]
                 writer.writerow(row)
             count += len(real)
+            if should_log(count, count - len(real), len(dataset)):
+                log_progress("paired metrics", count, len(dataset))
     if count != len(dataset):
         raise ValueError("Paired evaluation count mismatch")
     results["paired"] = {k: v / count for k, v in sums.items()}

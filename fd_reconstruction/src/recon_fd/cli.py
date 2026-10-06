@@ -82,6 +82,11 @@ def evaluate_main(argv=None):
             raise ValueError("Evaluation tokenizer does not match checkpoint configuration")
         model.load_state_dict(state["model"], strict=True)
     output = Path(expand_path(args.output))
+    print(json.dumps({"evaluation_start": {"checkpoint": args.checkpoint,
+                       "checkpoint_step": state["step"] if state else 0,
+                       "output": str(output), "num_samples": len(dataset),
+                       "representations": [s["name"] for s in config["evaluation"]["representations"]],
+                       "paired_metrics": config["evaluation"]["paired_metrics"]}}, sort_keys=True), flush=True)
     export = export_reconstructions(model, dataset, output / "reconstructions", config, device)
     del model
     if device.type == "cuda":
@@ -91,7 +96,10 @@ def evaluate_main(argv=None):
     results["checkpoint_model_sha256"] = export["identity"]["model_sha256"]
     from .provenance import write_json
     write_json(output / "metrics.json", results)
-    print(json.dumps(results["fd"], indent=2))
+    print(json.dumps({"evaluation_complete": {"checkpoint_step": results["checkpoint_step"],
+                      "num_samples": results["num_samples"], "fd": results["fd"],
+                      "paired": results["paired"], "model_sha256": results["checkpoint_model_sha256"]}},
+                     sort_keys=True), flush=True)
 
 
 def reference_main(argv=None):

@@ -5,6 +5,7 @@ import torch
 from recon_fd.objectives.statistics import RunningMoments, Moments
 from recon_fd.provenance import fingerprint
 from recon_fd.data import sequential_loader
+from .progress import log_progress, should_log
 
 
 def reference_identity(extractor, dataset, pixel_protocol="float01"):
@@ -42,10 +43,15 @@ def get_reference(extractor, dataset, cache_dir, batch_size, device, workers=0):
     identity = reference_identity(extractor, dataset)
     path = reference_path(cache_dir, identity)
     if path.exists():
+        log_progress(f"reference {extractor.identity['spec']['name']} cached", len(dataset), len(dataset))
         return load_reference(path, identity, device), identity
     accumulator = RunningMoments()
+    seen = 0
     for batch in sequential_loader(dataset, batch_size, workers):
         accumulator.update(extractor(batch["image"].to(device)))
+        previous, seen = seen, seen + len(batch["id"])
+        if should_log(seen, previous, len(dataset)):
+            log_progress(f"reference {extractor.identity['spec']['name']}", seen, len(dataset))
     moments = accumulator.moments()
     save_reference(path, moments, identity)
     return moments, identity
