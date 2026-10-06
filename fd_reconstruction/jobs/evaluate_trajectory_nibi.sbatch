@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Four separate 50k validation checkpoints. Submit with afterany dependencies.
+# Matched 50k validation checkpoints. Submit each group/checkpoint separately.
 #SBATCH --job-name=recon-fd-50k
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -13,13 +13,14 @@ set -euo pipefail
 : "${FD_PYTHON:?Cluster Python executable}"
 : "${FD_RUN_ROOT:?Existing experiment root}"
 : "${FD_EXPECTED_COMMIT:?Reviewed Git commit}"
-: "${FD_GROUP:?B or C}"
+: "${FD_GROUP:?A, B or C}"
 : "${FD_STEP:?Checkpoint step}"
 : "${IMAGENET_ROOT:?ImageNet root}"
 : "${TOKENIZER_CHECKPOINT:?AutoencoderKL checkpoint}"
 : "${INCEPTION_WEIGHTS:?Official Inception weights}"
 
 case "$FD_GROUP:$FD_STEP" in
+  A:3000|A:10000) config=configs/fd_only_nibi_large.yaml ;;
   B:3000|B:10000) config=configs/advfd_nibi_large.yaml ;;
   C:0|C:4) config=configs/ours_current_both_nibi_large.yaml ;;
   *) echo "Unsupported checkpoint: $FD_GROUP:$FD_STEP" >&2; exit 2 ;;
@@ -83,4 +84,14 @@ assert m["checkpoint_step"]==step and set(m["fd"])=={"inception","dinov2"}
 assert set(m["paired"])=={"psnr","ssim"}
 assert m["dataset"]==e["identity"]["dataset"]
 print("verified_50k",json.dumps({"step":step,"count":n,"fd":m["fd"],"paired":m["paired"],"model_sha256":m["checkpoint_model_sha256"]},sort_keys=True),flush=True)' "$output" "$FD_STEP"
+if [[ "$FD_GROUP" == A ]]; then
+  peer="$FD_RUN_ROOT/evaluation/fixed50k_inception_dinov2_v1/B/step_$FD_STEP/metrics.json"
+  test -f "$peer"
+  "$FD_PYTHON" -c 'import json,sys
+from pathlib import Path
+a=json.loads((Path(sys.argv[1])/"metrics.json").read_text()); b=json.loads(Path(sys.argv[2]).read_text())
+keys=("dataset","num_samples","image_protocol","implementation_sha256","representations","psnr_zero_mse_policy")
+assert all(a[k]==b[k] for k in keys), {k:(a[k],b[k]) for k in keys if a[k]!=b[k]}
+print("verified_A_B_evaluation_protocol",json.dumps({k:a[k] for k in ("num_samples","image_protocol","implementation_sha256")},sort_keys=True),flush=True)' "$output" "$peer"
+fi
 echo "end_utc=$(date -u +%FT%TZ) job=$SLURM_JOB_ID status=verified"
