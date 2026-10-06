@@ -6,6 +6,41 @@ from torch.nn import functional as F
 from recon_fd.provenance import fingerprint, state_fingerprint
 
 
+class _BicubicAntialiasResize(torch.autograd.Function):
+    """Preserve bicubic-AA features while isolating CUDA's non-deterministic VJP."""
+
+    @staticmethod
+    def forward(ctx, images, size):
+        ctx.input_shape = tuple(images.shape)
+        ctx.size = tuple(size)
+        return F.interpolate(images, ctx.size, mode="bicubic",
+                             align_corners=False, antialias=True)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        # The resize is linear in its input. Recompute its VJP on a zero probe
+        # so the sole non-deterministic CUDA kernel can run without changing
+        # the forward preprocessing or relaxing other training operations.
+        enabled = torch.are_deterministic_algorithms_enabled()
+        warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+        try:
+            torch.use_deterministic_algorithms(False)
+            with torch.enable_grad():
+                probe = grad_output.new_zeros(ctx.input_shape, requires_grad=True)
+                resized = F.interpolate(probe, ctx.size, mode="bicubic",
+                                        align_corners=False, antialias=True)
+                gradient, = torch.autograd.grad(resized, probe, grad_output)
+        finally:
+            torch.use_deterministic_algorithms(enabled, warn_only=warn_only)
+        return gradient, None
+
+
+def _resize_bicubic_antialias(images, size):
+    if images.is_cuda and images.requires_grad and torch.are_deterministic_algorithms_enabled():
+        return _BicubicAntialiasResize.apply(images, size)
+    return F.interpolate(images, size, mode="bicubic", align_corners=False, antialias=True)
+
+
 class TinyRepresentation(nn.Module):
     def __init__(self):
         super().__init__()
@@ -61,8 +96,7 @@ class TimmRepresentation(nn.Module):
 
     def forward(self, images):
         if images.shape[-2:] != (self.size, self.size):
-            images = F.interpolate(images, (self.size, self.size), mode="bicubic",
-                                   align_corners=False, antialias=True)
+            images = _resize_bicubic_antialias(images, (self.size, self.size))
         features = self.model.forward_features((images - self.mean) / self.std)
         if features.ndim == 4:
             return features.mean((2, 3)).float()

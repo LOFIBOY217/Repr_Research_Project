@@ -25,4 +25,5 @@ def determinism_settings():
         "cudnn_allow_tf32": torch.backends.cudnn.allow_tf32,
         "matmul_allow_tf32": torch.backends.cuda.matmul.allow_tf32,
         "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
+        "timm_bicubic_aa_cuda_backward": "scoped_nondeterministic_vjp_forward_unchanged",
     }

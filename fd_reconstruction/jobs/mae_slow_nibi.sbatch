@@ -70,12 +70,31 @@ if [[ "$FD_SCALE" == preflight ]]; then
   fi
 fi
 echo "start_utc=$(date -u +%FT%TZ) job=$SLURM_JOB_ID group=$FD_GROUP scale=$FD_SCALE commit=$FD_EXPECTED_COMMIT output=$run_dir"
-echo "protocol=G_batch16 D_every_50000_images first_D_after_50000 full_run_only"
+if [[ "$FD_SCALE" == preflight ]]; then
+  echo "protocol=engineering_only G_batch16 D_at_second_step reference_128"
+else
+  echo "protocol=G_batch16 D_every_50000_images first_D_after_50000"
+fi
 nvidia-smi
+if [[ "$FD_SCALE" == preflight ]]; then
+  "$FD_PYTHON" -c 'import torch
+from torch.nn import functional as F
+from recon_fd.representations import _resize_bicubic_antialias
+from recon_fd.runtime import configure_determinism
+configure_determinism("cuda")
+x=torch.randn(2,3,256,256,device="cuda",requires_grad=True)
+y=_resize_bicubic_antialias(x,(224,224))
+expected=F.interpolate(x.detach(),(224,224),mode="bicubic",align_corners=False,antialias=True)
+assert torch.equal(y,expected)
+y.square().mean().backward()
+assert torch.isfinite(x.grad).all() and torch.are_deterministic_algorithms_enabled()
+print("verified_cuda_bicubic_aa_forward_and_scoped_backward",flush=True)'
+fi
 "$FD_PYTHON" train.py --config "$config" "${args[@]}"
 "$FD_PYTHON" -c 'import json,sys; from pathlib import Path
 p=Path(sys.argv[1]); n=int(sys.argv[2]); rows=[json.loads(s) for s in (p/"train.jsonl").open()]; assert len(rows)==n and rows[-1]["step"]==n
 assert rows[-1]["fd_batch_size"]==16 and all(row["samples_seen"]==row["step"]*16 for row in rows)
+if n==2: assert rows[-1]["critic_updates"]==1
 assert (p/f"checkpoints/step_{n:07d}.pt").is_file()
 print("verified_training",json.dumps({"steps":n,"critic_updates":rows[-1]["critic_updates"],"samples_seen":rows[-1]["samples_seen"]}),flush=True)' "$run_dir" "$([[ "$FD_SCALE" == preflight ]] && echo 2 || echo 10000)"
 echo "end_utc=$(date -u +%FT%TZ) job=$SLURM_JOB_ID status=verified"

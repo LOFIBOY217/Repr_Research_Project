@@ -11,4 +11,10 @@ C's real pool is refreshed after each MAE update and stays valid while MAE is fi
 
 Both arms share the same E+D update count and 16-image G batch, unlike the old Inception B/C comparison. The feature-update cadence is matched, but B's real/fake EMA and C's 50k-real/16-fake current estimator necessarily use different statistics. The new C is an explicitly labelled approximation; positive validation results, not the training FD, are required to support the hypothesis.
 
+For CUDA training with strict PyTorch determinism, timm's 256-to-224 bicubic
+antialias resize has no deterministic backward kernel. The forward resize is
+unchanged; only its input-gradient computation temporarily opts out of strict
+determinism, then restores the prior setting. This exception is recorded in
+provenance. It does not make the complete run bitwise reproducible.
+
 Use `jobs/mae_slow_nibi.sbatch` with `FD_GROUP=B|C` and `FD_SCALE=preflight|full`. The preflight reduces reference pools to 128 and brings the first D update forward to step 1; it verifies engineering only and is not a 50k research result. Run the arms independently and sequentially on one GPU, with code synchronized through GitHub. Do not update the existing checkout while pinned evaluation jobs depend on its earlier commit.
