@@ -1,0 +1,11 @@
+# Synthetic schedule/gradient check; random tiny representation, not MAE science.
+extends: advfd_smoke.yaml
+adaptive:
+  start_step: 0
+  warmup_steps: 0
+  first_critic_step: 2
+  update_freq: 2
+train:
+  output: runs/mae_slow_b_smoke
+  steps: 5
+  save_every: 1

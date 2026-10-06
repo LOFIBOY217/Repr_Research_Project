@@ -130,7 +130,8 @@ class AdvFD(nn.Module):
         return self.config["weight"] * fraction
 
     def critic_due(self, step):
-        return self.active(step) and (step - self.config["start_step"]) % self.config["update_freq"] == 0
+        first = self.config.get("first_critic_step", self.config["start_step"])
+        return self.active(step) and step >= first and (step - first) % self.config["update_freq"] == 0
 
     @torch.no_grad()
     def initialize_fake_at_activation(self):

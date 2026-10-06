@@ -1,0 +1,21 @@
+# Matched slow-critic MAE C: no static, full MAE, current real 50k pool,
+# current fake minibatch (no EMA). Not the existing exact full-pool C.
+extends: ours_reconstruction_mae.yaml
+method: ours_current_batch
+adaptive:
+  fake_stats: {mode: batch_current}
+  start_step: 0
+  warmup_steps: 0
+  first_critic_step: 3125
+  update_freq: 3125
+  real_stats:
+    mode: reencode_pool
+    samples: 50000
+    batch_size: 16
+    seed: 217
+train:
+  output: runs/mae_slow_c
+  steps: 10000
+  batch_size: 16
+  save_every: 1000
+  log_every: 10

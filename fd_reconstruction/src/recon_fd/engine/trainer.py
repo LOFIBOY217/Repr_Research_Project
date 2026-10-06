@@ -10,6 +10,7 @@ from recon_fd.objectives.official_fd import OfficialFDStatistics, OfficialStatic
 from recon_fd.objectives.adaptive_fd import AdvFD
 from recon_fd.objectives.candidate_fd import CandidateFD
 from recon_fd.objectives.current_both import CurrentBothFD
+from recon_fd.objectives.current_batch import CurrentBatchFD
 from recon_fd.representations import build_representation
 from recon_fd.provenance import write_json, state_fingerprint
 from recon_fd.runtime import determinism_settings
@@ -28,8 +29,12 @@ def build_objective(config, dataset, device):
             baseline = deepcopy(config)
             baseline["method"] = "fd_only"
             static, identities = build_objective(baseline, dataset, device)
-        objective = (CurrentBothFD(config, dataset) if config["method"] == "ours_current_both"
-                     else CandidateFD(config, dataset, static)).to(device)
+        if config["method"] == "ours_current_both":
+            objective = CurrentBothFD(config, dataset).to(device)
+        elif config["method"] == "ours_current_batch":
+            objective = CurrentBatchFD(config, dataset).to(device)
+        else:
+            objective = CandidateFD(config, dataset, static).to(device)
         identities["candidate_real_pool"] = objective.real_reference.pool.identity
         if isinstance(objective, CurrentBothFD):
             identities["candidate_fake_pool"] = objective.real_reference.pool.identity

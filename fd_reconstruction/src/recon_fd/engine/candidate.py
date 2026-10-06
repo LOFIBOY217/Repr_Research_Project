@@ -62,8 +62,9 @@ def candidate_g_step(model, objective, optimizer, critic_optimizer, images, grad
                    real_reference_pool_samples=len(reference.pool),
                    real_reference_feature_images=int(reference.feature_images),
                    real_ema_updates=int(reference.ema.updates) if reference.ema is not None else 0,
-                   fake_ema_updates=int(objective.fake_statistics.updates),
-                   fake_statistics_historical=True,
+                   fake_ema_updates=int(objective.fake_statistics.updates) if objective.fake_statistics is not None else 0,
+                   fake_statistics_historical=objective.fake_statistics is not None,
+                   fake_statistics_samples=len(images) if objective.fake_statistics is None else 0,
                    statistics_updates={k: int(v.statistics.updates) for k, v in objective.spaces.items()},
                    clipped_pixel_fraction=float(((reconstruction.detach() <= 0) | (reconstruction.detach() >= 1)).float().mean()),
                    step_seconds=time.monotonic() - started)

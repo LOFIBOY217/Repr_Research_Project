@@ -1,0 +1,11 @@
+# Synthetic engineering check for the current-batch slow-critic branch.
+extends: ours_smoke.yaml
+method: ours_current_batch
+adaptive:
+  fake_stats: {mode: batch_current}
+  first_critic_step: 2
+  update_freq: 2
+train:
+  output: runs/mae_slow_c_smoke
+  steps: 5
+  save_every: 1

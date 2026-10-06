@@ -5,7 +5,7 @@ from pathlib import Path
 import yaml
 from .provenance import fingerprint
 
-CANDIDATE_METHODS = {"ours", "ours_add_static", "ours_lora", "ours_real_ema", "ours_fixed_reference", "ours_current_both"}
+CANDIDATE_METHODS = {"ours", "ours_add_static", "ours_lora", "ours_real_ema", "ours_fixed_reference", "ours_current_both", "ours_current_batch"}
 
 
 def merge(base, update):
@@ -66,9 +66,11 @@ def validate(config):
         allowed["adaptive"] |= {"representation", "weight", "ema_beta", "whiten_eps", "lr", "betas",
                                 "weight_decay", "grad_clip", "start_step", "warmup_steps", "update_freq",
                                 "steps_per_update", "lora", "gradient_checkpointing"}
+        if "first_critic_step" in config["adaptive"]:
+            allowed["adaptive"].add("first_critic_step")
     if config["method"] in CANDIDATE_METHODS:
         allowed["adaptive"] |= {"norm_eps", "initialization_samples", "initialization_batch_size"}
-    if config["method"] == "ours_current_both":
+    if config["method"] in {"ours_current_both", "ours_current_batch"}:
         allowed["adaptive"] |= {"fake_stats"}
     for section, keys in allowed.items():
         if set(config[section]) != keys:
@@ -77,6 +79,9 @@ def validate(config):
         raise NotImplementedError("Unsupported reconstruction method")
     if config["adaptive"]["enabled"] != (config["method"] != "fd_only"):
         raise ValueError("Method and adaptive.enabled disagree")
+    first_critic_step = config["adaptive"].get("first_critic_step")
+    if first_critic_step is not None and (not isinstance(first_critic_step, int) or first_critic_step < 0):
+        raise ValueError("adaptive.first_critic_step must be a nonnegative integer")
     if config["tokenizer"]["trainable_scope"] != "encoder_decoder":
         raise ValueError("All methods require joint encoder+decoder training")
     if config["method"] not in CANDIDATE_METHODS and not config["static"]["enabled"]:
@@ -178,6 +183,11 @@ def validate_candidate(config):
             raise ValueError("Current-both C uses the same paired pool for real and reconstructed images")
         if adaptive["initialization_batch_size"] != config["train"]["batch_size"]:
             raise ValueError("Current-both C uses train.batch_size for all reconstruction microbatches")
+    if method == "ours_current_batch":
+        if adaptive["fake_stats"] != {"mode": "batch_current"}:
+            raise ValueError("Slow-critic C requires current-batch fake statistics without EMA")
+        if adaptive["initialization_batch_size"] != config["train"]["batch_size"]:
+            raise ValueError("Slow-critic C uses the same declared fake batch size for training and logging")
     if adaptive["start_step"] != 0 or adaptive["warmup_steps"] != 0:
         raise ValueError("C starts after statistics initialization with nonzero loss; no static-only warmup")
     for key in ("lr", "weight", "whiten_eps", "grad_clip"):

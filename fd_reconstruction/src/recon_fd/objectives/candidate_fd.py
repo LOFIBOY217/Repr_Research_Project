@@ -86,7 +86,8 @@ class CandidateFD(nn.Module):
                 "real_covariance_ddof": 1, "fake_statistics": "official_advfd_ema"}
 
     def critic_due(self, step):
-        return step % self.config["update_freq"] == 0
+        first = self.config.get("first_critic_step", 0)
+        return step >= first and (step - first) % self.config["update_freq"] == 0
 
     @torch.no_grad()
     def initialize(self, model, dataset, seed, workers):

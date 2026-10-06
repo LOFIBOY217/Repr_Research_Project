@@ -1,0 +1,17 @@
+# Matched slow-critic MAE B: static SIM + MAE LoRA + AdvFD EMA.
+# Existing AdvFD baselines are untouched; this is a separate timing protocol.
+extends: advfd_reconstruction_mae.yaml
+adaptive:
+  start_step: 0
+  warmup_steps: 0
+  first_critic_step: 3125
+  update_freq: 3125
+  real_stats:
+    mode: ema
+    update_freq: 1
+train:
+  output: runs/mae_slow_b
+  steps: 10000
+  batch_size: 16
+  save_every: 1000
+  log_every: 10
