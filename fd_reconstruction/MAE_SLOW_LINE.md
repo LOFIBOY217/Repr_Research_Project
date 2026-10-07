@@ -1,4 +1,11 @@
-# MAE slow-critic B/C line
+# MAE slow-critic B/C line (historical approximation)
+
+The queued slow-C jobs remain untouched for provenance, but their 16-image fake
+statistics are **not** the main C method. The main MAE C configuration is now
+`configs/mae_current_both_c.yaml`: it reuses the existing exact paired 50k-pool
+`ours_current_both` engine, with batch 16 solely for chunking. Its four full-pool
+G updates are not equivalent to B's 10,000 minibatch G updates; this config is
+an initial cost/engineering validation, not a controlled B-versus-C outcome.
 
 This is a new two-arm experiment; existing Inception B/C and their checkpoints and evaluations remain unchanged. Both arms reconstruct ImageNet at 256 px with the same pretrained SD-VAE, E+D optimizer, data order, seed, batch size 16, 10,000 G updates, dynamic MAE initialization, D learning rate 2e-5, and D-then-G ordering. Both first update the dynamic feature extractor after 3,125 G updates (50,000 images), then once per 3,125 updates. The feature extractor is fixed between those updates. This schedule is a research variant, **not** the published AdvFD MAE schedule.
 

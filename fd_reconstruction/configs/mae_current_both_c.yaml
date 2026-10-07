@@ -1,0 +1,9 @@
+# Main MAE C: retain the existing exact paired 50k-pool C algorithm.
+# Batch size 16 is only a microbatch; each G/D optimizer update sees all 50k pairs.
+extends: ours_current_both.yaml
+adaptive:
+  representation: {name: mae, kind: timm, model_name: vit_large_patch16_224.mae, target_size: 224, pool: cls}
+  lr: 0.00002
+  gradient_checkpointing: true
+train:
+  output: runs/mae_current_both_c
