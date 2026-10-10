@@ -5,7 +5,7 @@
 | 首次公开 | 论文 | 与本项目的联系 |
 | --- | --- | --- |
 | 2017-06 | [GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium](https://arxiv.org/abs/1706.08500) | 新提出 FID，并将其作为替代 Inception Score 的生成图像评价指标；与本项目的 FD hacking 方法无直接联系。 |
-| 2019-11 | [Effectively Unbiased FID and Inception Score and where to find them](https://arxiv.org/abs/1911.07023) | 有限样本 FID 的偏差和模型排序问题。 |
+| 2019-11 | [Effectively Unbiased FID and Inception Score and where to find them](https://arxiv.org/abs/1911.07023) | 有限样本 FID 的偏差随模型变化；即使样本数相同，也可能误排模型。属于**评价估计问题**，不是 FD hacking。 |
 | 2020-03 | [Image Generation Via Minimizing Fréchet Distance in Discriminator Feature Space](https://arxiv.org/abs/2003.11774) | 在可学习的判别器特征空间中用 FD 训练生成器；动态特征 FD 的早期先例。 |
 | 2020-09 | [Backpropagating through Fréchet Inception Distance](https://arxiv.org/abs/2009.14075) | FastFID：让 FID 可用于反向传播和训练。 |
 | 2021-04 | [On Aliased Resizing and Surprising Subtleties in GAN Evaluation](https://arxiv.org/abs/2104.11222) | 缩放、压缩等预处理会改变 FID；提醒我们固定统一的 50K 评价协议。 |
@@ -34,3 +34,17 @@
 3. **与我们的课题：** 后来的 FD-Loss 把这类分布距离转为训练目标；AdvFD 和我们的 B/C 则研究特征空间可被优化“钻空子”的问题。原始 FID 依赖固定 Inception 特征，也只比较两个图像集合的分布，不检查重建图是否对应自己的输入原图。因此在重建任务中，还必须单独报告配对指标和视觉错误；这属于我们的研究推论，不是 2017 论文自己的结论。
 
 后续阅读重点：2017 年论文的 FID 测量定义与当时的扰动实验，应和 2022 年类别偏差、2023–2024 年感知失配研究放在一起看；早期“优于 Inception Score”不等于“FID 对所有视觉缺陷可靠”。
+
+## 2. Chong & Forsyth (2019)：有限样本 FID 的偏差
+
+**原文：** [论文页面及摘要](https://arxiv.org/abs/1911.07023) · [PDF](https://arxiv.org/pdf/1911.07023)；首次公开于 2019 年 11 月，发表于 CVPR 2020。以下为覆盖摘要全部要点的中文意译。
+
+### 摘要中文意译
+
+论文指出，用于评价生成模型的两个常见指标——Fréchet Inception Distance（FID）和 Inception Score（IS）——都有偏差：用有限个样本算出的分数，其期望并不等于指标的真实值。更糟的是，偏差取决于被评价的具体模型，因此模型 A 可能仅因偏差更小，就得到比模型 B 更好的分数。让所有模型使用相同数量的样本也无法解决这个问题；作者据此认为，按当时通常方式计算的 FID 或 IS 来比较模型并不可靠。接着，作者提出通过外推，估计样本数趋于无穷时的分数，分别称为 FID∞ 和 IS∞，从而得到实际中几乎无偏的估计。准确外推又需要可靠的有限样本分数；作者发现，准蒙特卡罗积分能够显著改进有限样本 FID 和 IS 的估计。外推后的分数可以直接替换通常计算的有限样本分数。此外，在 GAN 训练中使用低差异序列，也能让得到的生成器表现略有改善。
+
+### 贡献与本项目的联系
+
+1. **核心发现：** 有限样本 FID 的偏差不仅与样本数有关，也与模型有关。统一使用 50K 张图是必要的比较控制，但不等于完全消除偏差或保证细微排名可信。
+2. **处理办法：** 对不同样本量的得分按 `1/N` 外推，估计 `FID∞`；准蒙特卡罗采样用于降低随机生成器的有限样本估计误差。后者不应不加区分地照搬到固定输入、确定性输出的重建实验。
+3. **与 FD hacking 的界限：** 本文研究的是**分数估计不准**，不是模型优化固定特征空间后产生视觉缺陷。即便估计出无偏的 FID，仍可能存在特征表示与人类视觉不一致的问题。对我们的 A/B/C 对比，它主要提醒我们谨慎解释接近的 50K FD 数值，必要时做重复抽样或样本量外推。
