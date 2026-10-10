@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | 2017-06 | [GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium](https://arxiv.org/abs/1706.08500) | 新提出 FID，并将其作为替代 Inception Score 的生成图像评价指标；与本项目的 FD hacking 方法无直接联系。 |
 | 2019-11 | [Effectively Unbiased FID and Inception Score and where to find them](https://arxiv.org/abs/1911.07023) | 有限样本 FID 的偏差随模型变化；即使样本数相同，也可能误排模型。属于**评价估计问题**，不是 FD hacking。 |
-| 2020-03 | [Image Generation Via Minimizing Fréchet Distance in Discriminator Feature Space](https://arxiv.org/abs/2003.11774) | 在可学习的判别器特征空间中用 FD 训练生成器；动态特征 FD 的早期先例。 |
+| 2020-03 | [Image Generation Via Minimizing Fréchet Distance in Discriminator Feature Space](https://arxiv.org/abs/2003.11774) | 判别器学特征，生成器最小化该特征空间的 FD；动态特征 FD 训练的早期先例，但不是图像重建。 |
 | 2020-09 | [Backpropagating through Fréchet Inception Distance](https://arxiv.org/abs/2009.14075) | FastFID：让 FID 可用于反向传播和训练。 |
 | 2021-04 | [On Aliased Resizing and Surprising Subtleties in GAN Evaluation](https://arxiv.org/abs/2104.11222) | 缩放、压缩等预处理会改变 FID；提醒我们固定统一的 50K 评价协议。 |
 | 2022-03 | [The Role of ImageNet Classes in Fréchet Inception Distance](https://arxiv.org/abs/2203.06026) | 改变类别直方图即可降低 FID，而图像质量未必改善。 |
@@ -48,3 +48,17 @@
 1. **核心发现：** 有限样本 FID 的偏差不仅与样本数有关，也与模型有关。统一使用 50K 张图是必要的比较控制，但不等于完全消除偏差或保证细微排名可信。
 2. **处理办法：** 对不同样本量的得分按 `1/N` 外推，估计 `FID∞`；准蒙特卡罗采样用于降低随机生成器的有限样本估计误差。后者不应不加区分地照搬到固定输入、确定性输出的重建实验。
 3. **与 FD hacking 的界限：** 本文研究的是**分数估计不准**，不是模型优化固定特征空间后产生视觉缺陷。即便估计出无偏的 FID，仍可能存在特征表示与人类视觉不一致的问题。对我们的 A/B/C 对比，它主要提醒我们谨慎解释接近的 50K FD 数值，必要时做重复抽样或样本量外推。
+
+## 3. Doan et al. (2020)：在动态判别器特征中训练 FD
+
+**原文：** [论文页面及摘要](https://arxiv.org/abs/2003.11774) · [PDF](https://arxiv.org/pdf/2003.11774)；首次公开于 2020 年 3 月。以下为覆盖摘要全部要点的中文意译。
+
+### 摘要中文意译
+
+对于给定的图像生成问题，图像所处的内在流形通常维度较低。作者据此认为，与其在原始像素空间训练 GAN 生成器，不如在能够表达这一流形的低维特征空间里，最小化真实图像与生成图像之间的分布距离；他们选用 GAN 判别器的特征空间作为这种表示。分布距离有两种选择：Fréchet Distance（FD）或直接计算最优传输（OT），相应得到 Fréchet-GAN 和 OT-GAN 两种新方法。使用 FD 的想法受到 FID 作为图像生成评价指标取得成功的启发。Fréchet-GAN 有几项优势：作者提出了高效且数值稳定的 FD 及其梯度计算方法；FD 的计算开销显著低于 OT，因此训练时可以使用更大的 mini-batch。作者还在多个基准数据集上实验，报告 Fréchet-GAN（尤其如此）和 OT-GAN 的图像生成能力，优于所比较的基于 Wasserstein 距离的代表性原始与对偶方法。
+
+### 方法、贡献与本项目的联系
+
+1. **训练方法：** 判别器照常学习区分真实与生成图像；生成器不直接用常规 GAN loss，而是最小化两组图像在判别器中间特征中的 FD。两者交替更新，所以特征空间会随训练变化。该 FD **不是**固定 Inception 特征上的 FID；论文仍用 FID 等指标评价结果。
+2. **技术贡献：** 为使 FD 可训练，论文处理协方差矩阵平方根的数值稳定性及梯度问题；同时比较了判别器特征空间中的 FD 与 OT。
+3. **对我们很关键的先例：** “让特征提取器动态学习，再用 FD 训练图像模型”在 2020 年就已有实现，因此不能把这个宽泛想法当作我们 C 方法的全新贡献。但本文研究的是**无条件图像生成**，判别器通过真假分类训练，并非像 AdvFD 那样直接最大化 FD；它也没有研究配对图像重建、FD hacking 诊断或我们的三项改动组合。
