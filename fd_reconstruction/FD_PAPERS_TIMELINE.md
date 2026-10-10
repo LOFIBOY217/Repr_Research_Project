@@ -4,7 +4,7 @@
 
 | 首次公开 | 论文 | 与本项目的联系 |
 | --- | --- | --- |
-| 2017-06 | [GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium](https://arxiv.org/abs/1706.08500) | 提出 FID，最初用于**评价**生成图像。 |
+| 2017-06 | [GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium](https://arxiv.org/abs/1706.08500) | 新提出 FID，并将其作为替代 Inception Score 的生成图像评价指标；与本项目的 FD hacking 方法无直接联系。 |
 | 2019-11 | [Effectively Unbiased FID and Inception Score and where to find them](https://arxiv.org/abs/1911.07023) | 有限样本 FID 的偏差和模型排序问题。 |
 | 2020-03 | [Image Generation Via Minimizing Fréchet Distance in Discriminator Feature Space](https://arxiv.org/abs/2003.11774) | 在可学习的判别器特征空间中用 FD 训练生成器；动态特征 FD 的早期先例。 |
 | 2020-09 | [Backpropagating through Fréchet Inception Distance](https://arxiv.org/abs/2009.14075) | FastFID：让 FID 可用于反向传播和训练。 |
